@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.vite/
+
+# Local credentials and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local verification scripts, screenshots and generated reports
+artifacts/
+playwright-report/
+test-results/
+coverage/
+*.log
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
