@@ -11,7 +11,21 @@ const click=sel=>page.locator(sel).first().click();
 await page.goto(base);await page.waitForTimeout(12000);
 assert.ok((await read()).kills>=1,'real-time hunt advances');
 await click('[data-act="pause"]');const paused=await read();await page.waitForTimeout(1100);await click('#save-btn');assert.equal((await read()).progress,paused.progress,'pause stops progress');
-await click('nav [data-page="build"]');await click('[data-class="witch"]');await click('[data-build="storm"]');assert.equal((await read()).buildId,'storm');
+await click('nav [data-page="build"]');await click('[data-class="sorceress"]');await click('[data-build="chainlightning"]');assert.equal((await read()).buildId,'chainlightning');
+assert.equal(await page.locator('[data-class]').count(),2,'exactly two classes');
+assert.equal(await page.locator('.talent-tree').count(),3,'three skill trees');
+await click('[data-train="chainLightning"]');assert.equal((await read()).talents.sorceress.chainLightning,1);
+await click('[data-train="lightningMastery"]');await click('[data-train="chargedBolt"]');
+assert.equal(await page.locator('#skill-points').innerText(),'0');
+assert.equal(await page.locator('[data-train="chainLightning"]').isDisabled(),true,'cannot overspend');
+await click('[data-act="resetTalents"]');assert.equal(await page.locator('#skill-points').innerText(),'3');
+await click('[data-train="chainLightning"]');
+await page.evaluate(()=>window.scrollTo(0,0));await page.waitForTimeout(150);await page.screenshot({path:'artifacts/classes-sorceress.png',fullPage:true});
+await click('[data-class="barbarian"]');await click('[data-build="frenzy"]');await click('[data-train="weaponMastery"]');
+await page.evaluate(()=>window.scrollTo(0,0));await page.waitForTimeout(150);await page.screenshot({path:'artifacts/classes-barbarian.png',fullPage:true});
+await click('[data-class="sorceress"]');await click('[data-build="chainlightning"]');
+assert.equal((await read()).talents.sorceress.chainLightning,1,'class-specific allocation retained');
+
 await click('nav [data-page="inventory"]');await click('[data-item="storm-coat"]');await click('[data-equip="storm-coat"]');assert.equal((await read()).equipment.armor.id,'storm-coat');
 await click('[data-item="bone-scythe"]');await click('[data-list="bone-scythe"]');assert.ok((await read()).listings.some(l=>l.owner==='you'));
 await click('nav [data-page="market"]');await page.screenshot({path:'artifacts/market.png',fullPage:true});await click('[data-cancel]');assert.ok((await read()).inventory.some(i=>i.id==='bone-scythe'));
@@ -21,11 +35,11 @@ await click('nav [data-page="fish"]');await page.screenshot({path:'artifacts/fis
 await click('nav [data-page="boss"]');await click('[data-activity="boss"]');const hp=(await read()).boss.hp;await page.waitForTimeout(2100);await click('#save-btn');assert.ok((await read()).boss.hp<hp);await page.screenshot({path:'artifacts/boss.png',fullPage:true});
 await click('nav [data-page="adventure"]');await click('[data-zone="grave"]');assert.equal((await read()).activity,'hunt');
 await page.screenshot({path:'artifacts/desktop.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-await page.reload();await page.waitForTimeout(1000);assert.equal((await read()).buildId,'storm','reload preserves build');
+await page.reload();await page.waitForTimeout(1000);assert.equal((await read()).buildId,'chainlightning','reload preserves build');
 await page.addInitScript(()=>{if(sessionStorage.getItem('offline-test-done'))return;const s=JSON.parse(localStorage.getItem('ashen-covenant-save-v1'));if(s){s.savedAt=Date.now()-120000;localStorage.setItem('ashen-covenant-save-v1',JSON.stringify(s));sessionStorage.setItem('offline-test-done','yes');}});await page.reload();await page.waitForTimeout(500);assert.match((await read()).offlineSummary,/离线 2 分钟/);
 await page.setViewportSize({width:390,height:844});await page.screenshot({path:'artifacts/mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'mobile width');
 for(const tab of ['build','inventory','boss','fish','market','adventure']){await click(`nav [data-page="${tab}"]`);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,tab+' mobile overflow');}
-await click('nav [data-page="inventory"]');await click('[data-item="bone-scythe"]');await page.screenshot({path:'artifacts/mobile-item.png',fullPage:true});await click('[data-close]');
+await click('nav [data-page="build"]');await page.evaluate(()=>window.scrollTo(0,0));await page.waitForTimeout(150);await page.screenshot({path:'artifacts/classes-mobile.png',fullPage:true});await click('[data-train="lightningMastery"]');assert.ok((await read()).talents.sorceress.lightningMastery>=1,'mobile training');await click('nav [data-page="inventory"]');await click('[data-item="bone-scythe"]');await page.screenshot({path:'artifacts/mobile-item.png',fullPage:true});await click('[data-close]');
 assert.deepEqual(errors,[]);
-await fs.writeFile('artifacts/browser-results.json',JSON.stringify({passed:true,checks:['real-time hunt','pause','class/build','equip','list/cancel','purchase balance','real-time fish/redeem','boss damage','return hunt','reload','offline rewards','6 mobile pages','item modal'],errors,viewports:['1440x1100','390x844'],url:base},null,2));
-console.log('Production browser checks passed; 14 behavior/layout checks, no page errors.');await browser.close();
+await fs.writeFile('artifacts/browser-results.json',JSON.stringify({passed:true,checks:['two classes/three trees','talent spend/refund','class-specific allocations','mobile training','real-time hunt','pause','class/build','equip','list/cancel','purchase balance','real-time fish/redeem','boss damage','return hunt','reload','offline rewards','6 mobile pages','item modal'],errors,viewports:['1440x1100','390x844'],url:base},null,2));
+console.log('Production browser checks passed; 18 behavior/layout checks, no page errors.');await browser.close();
