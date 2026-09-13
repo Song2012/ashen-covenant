@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGame, SAVE_KEY, CLASSES } from './engine.js';
+import { createGame, SAVE_KEY, CLASSES, INVENTORY_CAPACITY, VAULT_CAPACITY } from './engine.js';
 import { MONSTERS, getMonster } from './encounters.js';
 
 const memory = () => { const data = new Map(); return { getItem: k => data.get(k) || null, setItem: (k, v) => data.set(k, v) }; };
@@ -532,12 +532,17 @@ test('hunt event timing and identities are independent of online tick size', () 
   assert.equal(batch.state.rng, small.state.rng);
 });
 
-test('v0.3 one-hour reward baseline remains unchanged for all six builds', () => {
+test('v0.5 preserves one-hour drop curve while retained legendary value replaces liquidation gold', () => {
   const baseline = { whirlwind: [29,164515,952,1900120855], frenzy: [29,169753,971,3259712130], warcry: [25,111407,711,1357681852], fireball: [20,64599,471,4271917375], blizzard: [23,90658,609,4185180971], chainlightning: [27,131638,807,76333626] };
+  const protection = { whirlwind: [146761,25,17754], frenzy: [151163,26,18590], warcry: [98339,20,13068], fireball: [58703,10,5896], blizzard: [81616,14,9042], chainlightning: [118735,19,12903] };
   for (const cls of CLASSES) for (const build of cls.builds) {
     const game = createGame(memory());
     game.act('class', cls.id); game.act('build', build.id); game.tick(3600);
-    assert.deepEqual([game.state.level, game.state.gold, game.state.kills, game.state.rng], baseline[build.id], build.id);
+    const protectedValue = game.state.vault.reduce((sum, item) => sum + item.value, 0);
+    assert.deepEqual([game.state.gold, game.state.vault.length, protectedValue], protection[build.id], `${build.id}/new cash and retained items`);
+    assert.deepEqual([game.state.level, game.state.gold + protectedValue, game.state.kills, game.state.rng], baseline[build.id], `${build.id}/unchanged generation`);
+    assert.ok(game.state.vault.every(item => item.rarity === 'legendary'));
+    assert.equal(game.state.pendingLoot, null);
   }
 });
 
@@ -585,4 +590,234 @@ test('changing boss build flushes only old-build damage and offline damage is ne
   const pulse = restored.eventsSince().find(e => e.type === 'bossHit');
   assert.ok(pulse);
   assert.ok(Math.abs(pulse.damage - dps * untilPulse) < 1e-7, 'first new pulse must not contain offline accumulated damage');
+});
+
+const testItem = (game, id, overrides = {}) => ({ ...(game.state.equipment.weapon || game.state.inventory[0]), id, name: id, rarity: 'magic', locked: false, affixes: ['测试词缀'], ...overrides });
+function fillBag(game) {
+  while (game.state.inventory.length < INVENTORY_CAPACITY) game.state.inventory.push(testItem(game, `bag-${game.state.inventory.length}`));
+}
+function fillVault(game) {
+  while (game.state.vault.length < VAULT_CAPACITY) game.state.vault.push(testItem(game, `vault-${game.state.vault.length}`, { rarity: 'legendary' }));
+}
+const heldIds = game => [...game.state.inventory, ...game.state.vault, ...(game.state.pendingLoot ? [game.state.pendingLoot] : []), ...game.state.listings.map(l => l.item)].map(i => i.id);
+
+test('legendary boss drops are protected in vault, never liquidated, and non-legendaries still liquidate', () => {
+  const game = createGame(memory()); fillBag(game);
+  game.act('activity', 'boss'); game.state.boss.hp = 1;
+  const gold = game.state.gold;
+  game.tick(0.1);
+  assert.equal(game.state.inventory.length, INVENTORY_CAPACITY);
+  assert.equal(game.state.vault.length, 1);
+  assert.equal(game.state.vault[0].rarity, 'legendary');
+  assert.equal(game.state.gold, gold + 420);
+  const event = game.eventsSince().find(e => e.type === 'loot');
+  assert.equal(event.destination, 'vault'); assert.equal(event.autoSold, false);
+  game.act('zone', 'grave'); game.tick(120);
+  assert.ok(game.eventsSince().some(e => e.destination === 'sold' && e.item.rarity !== 'legendary'));
+  assert.ok(game.eventsSince().every(e => e.destination !== 'sold' || e.item.rarity !== 'legendary'));
+});
+
+test('full vault preserves one pending legendary and stops an eight-hour tick immediately', () => {
+  const game = createGame(memory()); fillBag(game); fillVault(game);
+  game.act('activity', 'boss'); game.state.boss.hp = 1;
+  const gold = game.state.gold, time = game.state.simTime;
+  game.tick(8 * 3600);
+  assert.equal(game.state.boss.kills, 1);
+  assert.equal(game.state.gold, gold + 420);
+  assert.ok(game.state.simTime - time < 0.01);
+  assert.equal(game.state.pendingLoot.rarity, 'legendary');
+  assert.equal(game.state.running, false);
+  assert.equal(game.state.pauseReason, 'lootProtection');
+  assert.equal(game.state.vault.length, VAULT_CAPACITY);
+  assert.equal(new Set(heldIds(game)).size, heldIds(game).length);
+  const pendingId = game.state.pendingLoot.id, cursor = game.state.eventSequence;
+  for (const [type, id] of [['pause'], ['activity', 'fish'], ['zone', 'grave']]) assert.match(game.act(type, id), /等待处理|待处理/);
+  game.act('build', 'warcry'); game.act('class', 'sorceress');
+  game.tick(1000);
+  assert.equal(game.state.pendingLoot.id, pendingId);
+  assert.equal(game.state.boss.kills, 1);
+  assert.equal(game.state.running, false);
+  assert.equal(game.eventsSince(cursor).length, 0);
+});
+
+test('claim is transactional, pending can move into a freed vault slot, and recovery requires explicit resume', () => {
+  const game = createGame(memory()); fillBag(game); fillVault(game);
+  game.act('activity', 'boss'); game.state.boss.hp = 1; game.tick(1);
+  const pendingId = game.state.pendingLoot.id, vaultId = game.state.vault[0].id;
+  const before = heldIds(game).sort();
+  game.act('claim', vaultId); game.act('claim', pendingId);
+  assert.deepEqual(heldIds(game).sort(), before);
+  game.act('sell', vaultId);
+  game.act('claim', pendingId);
+  assert.equal(game.state.pendingLoot, null);
+  assert.ok(game.state.vault.some(i => i.id === pendingId));
+  assert.equal(game.state.running, false);
+  assert.equal(game.state.pauseReason, 'manual');
+  game.act('pause'); assert.equal(game.state.running, true);
+  game.act('sellMagic');
+  game.act('claim', pendingId);
+  assert.ok(game.state.inventory.some(i => i.id === pendingId));
+  assert.equal(new Set(heldIds(game)).size, heldIds(game).length);
+});
+
+test('vault and pending equip swap items safely at full capacity and preserve old-item locks', () => {
+  const game = createGame(memory()); fillBag(game); fillVault(game);
+  const old = game.state.equipment.weapon; game.act('lock', old.id);
+  const vaultItem = game.state.vault[0];
+  const before = heldIds(game).sort();
+  game.act('equip', vaultItem.id);
+  assert.equal(game.state.equipment.weapon.id, vaultItem.id);
+  assert.ok(game.state.vault.some(i => i.id === old.id && i.locked));
+  assert.deepEqual(heldIds(game).sort(), before);
+  game.state.pendingLoot = testItem(game, 'pending-weapon', { rarity: 'legendary', power: 90 });
+  game.state.running = false; game.state.pauseReason = 'lootProtection';
+  game.act('lock', vaultItem.id);
+  const allBefore = heldIds(game).sort();
+  game.act('equip', 'pending-weapon');
+  assert.equal(game.state.equipment.weapon.id, 'pending-weapon');
+  assert.equal(game.state.pendingLoot.id, vaultItem.id);
+  assert.equal(game.state.pendingLoot.locked, true);
+  assert.equal(game.state.running, false);
+  assert.deepEqual(heldIds(game).sort(), allBefore);
+  assert.equal(game.state.inventory.length, INVENTORY_CAPACITY);
+  assert.equal(game.state.vault.length, VAULT_CAPACITY);
+});
+
+test('locked items cannot be sold, listed or bulk sold; equipped items remain protected too', () => {
+  const game = createGame(memory());
+  game.state.inventory.push(testItem(game, 'loose-magic', { value: 17 }));
+  game.state.inventory.push(testItem(game, 'locked-magic', { value: 29 }));
+  game.act('lock', 'locked-magic');
+  game.state.vault.push(testItem(game, 'vault-magic', { value: 50 }));
+  const gold = game.state.gold;
+  game.act('sell', 'locked-magic'); game.act('list', 'locked-magic');
+  game.act('sell', game.state.equipment.weapon.id);
+  assert.equal(game.state.gold, gold);
+  const sale = game.act('sellMagic');
+  assert.match(sale, /1 件.*17 金币/);
+  assert.equal(game.state.gold, gold + 17);
+  assert.ok(game.state.inventory.some(i => i.id === 'locked-magic'));
+  assert.ok(game.state.inventory.some(i => i.id === game.state.equipment.armor.id));
+  assert.ok(game.state.vault.some(i => i.id === 'vault-magic'));
+  game.act('lock', 'locked-magic'); game.act('list', 'locked-magic');
+  assert.ok(game.state.listings.some(l => l.item.id === 'locked-magic'));
+});
+
+test('pending items can be sold or listed and locked pending items stay protected', () => {
+  for (const action of ['sell', 'list']) {
+    const game = createGame(memory());
+    game.state.pendingLoot = testItem(game, `pending-${action}`, { rarity: 'legendary', locked: true });
+    game.state.running = false; game.state.pauseReason = 'lootProtection';
+    const id = game.state.pendingLoot.id;
+    assert.match(game.act(action, id), /锁定/);
+    assert.equal(game.state.pendingLoot.id, id);
+    game.act('lock', id); game.act(action, id);
+    assert.equal(game.state.pendingLoot, null);
+    assert.equal(game.state.running, false);
+    if (action === 'list') assert.ok(game.state.listings.some(l => l.item.id === id));
+  }
+});
+
+test('comparison is a detached pure query and matches actual equip across protected containers', () => {
+  const storage = memory(); const game = createGame(storage); fillBag(game);
+  game.state.vault.push(testItem(game, 'vault-upgrade', { power: 70, rarity: 'legendary', element: 'physical' }));
+  game.save();
+  const serialized = JSON.stringify(game.state), saved = storage.getItem(SAVE_KEY);
+  const comparison = game.compareItem('vault-upgrade');
+  assert.ok(comparison.differences.dps > 0);
+  assert.ok(comparison.differences.magicFind > 0);
+  assert.equal(JSON.stringify(game.state), serialized);
+  assert.equal(storage.getItem(SAVE_KEY), saved);
+  comparison.item.name = 'mutated'; comparison.currentItem.affixes[0] = 'mutated'; comparison.before.dps = -1;
+  assert.notEqual(game.state.vault[0].name, 'mutated');
+  assert.notEqual(game.state.equipment.weapon.affixes[0], 'mutated');
+  game.act('equip', 'vault-upgrade');
+  assert.deepEqual(game.stats(), comparison.after);
+  assert.equal(game.compareItem('missing'), null);
+});
+
+test('legacy migration and restore deduplicate containers, preserve locks, and enforce pending pause', () => {
+  const storage = memory(); const game = createGame(storage);
+  const raw = JSON.parse(storage.getItem(SAVE_KEY));
+  const oldGold = raw.gold;
+  delete raw.vault; delete raw.pendingLoot; delete raw.pauseReason;
+  raw.inventory.forEach(i => delete i.locked);
+  storage.setItem(SAVE_KEY, JSON.stringify(raw));
+  const legacy = createGame(storage);
+  assert.equal(legacy.state.gold, oldGold);
+  assert.equal(legacy.state.inventory.length, 8);
+  assert.ok(legacy.state.inventory.every(i => i.locked === false));
+  const duplicate = { ...legacy.state.inventory[0], locked: true };
+  raw.vault = [duplicate, testItem(legacy, 'vault-distinct', { locked: true }), { invalid: true }];
+  raw.pendingLoot = testItem(legacy, 'drop-999', { rarity: 'legendary', locked: true });
+  raw.running = true; raw.savedAt = Date.now() - 3600000;
+  raw.listings.push({ id: 'duplicate-listing', owner: 'you', price: 2, item: duplicate });
+  storage.setItem(SAVE_KEY, JSON.stringify(raw));
+  const restored = createGame(storage);
+  assert.equal(new Set(heldIds(restored)).size, heldIds(restored).length);
+  assert.equal(restored.state.inventory[0].locked, true);
+  assert.equal(restored.state.vault.length, 1);
+  assert.equal(restored.state.pendingLoot.id, 'drop-999');
+  assert.equal(restored.state.pendingLoot.locked, true);
+  assert.equal(restored.state.running, false);
+  assert.equal(restored.state.pauseReason, 'lootProtection');
+  assert.equal(restored.state.kills, raw.kills);
+  assert.ok(restored.state.sequence >= 999);
+});
+
+test('offline overflow pauses at the same reward boundary without losing legendary or replaying events', () => {
+  const storage = memory(); const game = createGame(storage); fillBag(game); fillVault(game);
+  game.act('activity', 'boss'); game.state.boss.hp = 1; game.save();
+  const raw = JSON.parse(storage.getItem(SAVE_KEY)); raw.savedAt = Date.now() - 8 * 3600000;
+  storage.setItem(SAVE_KEY, JSON.stringify(raw));
+  const restored = createGame(storage);
+  assert.equal(restored.state.boss.kills, 1);
+  assert.equal(restored.state.pendingLoot.rarity, 'legendary');
+  assert.equal(restored.state.running, false);
+  assert.match(restored.state.offlineSummary, /传奇保护暂停/);
+  assert.deepEqual(restored.eventsSince(), []);
+  assert.equal(createGame(storage).state.pendingLoot.id, restored.state.pendingLoot.id);
+});
+
+test('eight-hour bounded and small ticks stop identically at protected loot capacity', () => {
+  const large = createGame(memory()), small = createGame(memory());
+  large.tick(8 * 3600);
+  for (let i = 0; i < 8 * 1200; i++) small.tick(3);
+  for (const field of ['gold', 'level', 'kills', 'rng', 'sequence', 'running', 'pauseReason']) assert.equal(large.state[field], small.state[field], field);
+  assert.deepEqual(large.state.vault, small.state.vault);
+  assert.deepEqual(large.state.pendingLoot, small.state.pendingLoot);
+  assert.equal(large.state.pendingLoot.rarity, 'legendary');
+  assert.equal(large.state.vault.length, VAULT_CAPACITY);
+});
+
+test('fishing legendary drops obey the same protection and exact stop boundary as bosses', () => {
+  for (const full of [false, true]) {
+    const game = createGame(memory()); fillBag(game); if (full) fillVault(game);
+    game.act('activity', 'fish');
+    // This persisted seed yields a treasure catch and legendary quality under
+    // the ordinary fishing RNG sequence; no drop hook or forced reward path.
+    game.state.rng = 1761;
+    const gold = game.state.gold;
+    game.tick(full ? 3600 : 8);
+    const item = full ? game.state.pendingLoot : game.state.vault[0];
+    assert.equal(item.rarity, 'legendary');
+    assert.equal(game.state.gold, gold);
+    assert.equal(game.state.fish, 1);
+    assert.equal(game.state.running, !full);
+    assert.ok(game.eventsSince().some(e => e.type === 'loot' && e.destination === (full ? 'pending' : 'vault') && e.autoSold === false));
+  }
+});
+
+test('external equip cannot discard an item when the full bag has an empty equipment slot', () => {
+  const game = createGame(memory()); fillBag(game);
+  game.state.equipment.weapon = null;
+  game.state.vault.push(testItem(game, 'external-weapon', { slot: 'weapon', rarity: 'legendary' }));
+  const before = heldIds(game).sort();
+  assert.match(game.act('equip', 'external-weapon'), /腾出一格/);
+  assert.deepEqual(heldIds(game).sort(), before);
+  assert.equal(game.state.equipment.weapon, null);
+  game.act('sellMagic'); game.act('equip', 'external-weapon');
+  assert.equal(game.state.equipment.weapon.id, 'external-weapon');
+  assert.ok(game.state.inventory.some(i => i.id === 'external-weapon'));
+  assert.ok(!game.state.vault.some(i => i.id === 'external-weapon'));
 });

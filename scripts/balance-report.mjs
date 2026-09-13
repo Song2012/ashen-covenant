@@ -20,14 +20,17 @@ for (const profession of CLASSES) for (const build of profession.builds) {
     }
     if (elapsed === 3600 || elapsed === 8 * 3600) rows.push({
       class: profession.id, build: build.id, hours: elapsed / 3600,
+      activeHours: Number((game.state.simTime / 3600).toFixed(4)),
       level: game.state.level, gold: game.state.gold, kills: game.state.kills,
-      legendaryGenerated, legendaryHeld: game.state.inventory.filter(i => i.rarity === 'legendary').length,
+      legendaryGenerated, legendaryHeld: [...game.state.inventory, ...game.state.vault, ...(game.state.pendingLoot ? [game.state.pendingLoot] : [])].filter(i => i.rarity === 'legendary').length,
+      vaultCount: game.state.vault.length, pending: Boolean(game.state.pendingLoot), pauseReason: game.state.pauseReason,
+      protectedSaleValue: [...game.state.vault, ...(game.state.pendingLoot ? [game.state.pendingLoot] : [])].reduce((sum, item) => sum + item.value, 0),
       totalDrops, autoSold, rng: game.state.rng,
     });
   }
 }
 console.log(JSON.stringify({
-  version: '0.4-encounter-baseline',
-  method: '固定种子184731；墓园挂机；初始装备；不加技能、不换装、不交易；3秒步长；传奇掉落数含满包自动出售，持有数含初始传奇。金币为最终余额。仅建立基线，尚未完成平衡。',
+  version: '0.5-loot-protection-baseline',
+  method: '固定种子184731；墓园挂机；初始装备；不加技能、不换装、不交易、不清理仓库；3秒步长；传奇溢出进入120格仓库，再满保留单件待处理并暂停。hours是请求观察时长，activeHours是实际战斗时长。传奇持有数含初始传奇与保护装备；protectedSaleValue为未兑换的保护装备售价值，不是金币收益。仅建立基线，尚未完成成长平衡。',
   rows,
 }, null, 2));

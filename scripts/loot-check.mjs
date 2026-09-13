@@ -1,0 +1,97 @@
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { createGame, SAVE_KEY } from '../src/engine.js';
+const out = 'artifacts/v05';
+await fs.mkdir(out, { recursive: true });
+const browser = await chromium.launch({ headless: true });
+const errors = [], checks = [];
+const base = process.env.TEST_URL || 'http://127.0.0.1:5189';
+function fresh() { const g = createGame(null); g.state.running = false; g.state.savedAt = Date.now(); return structuredClone(g.state); }
+const cloneItem = (item, id, changes = {}) => ({ ...structuredClone(item), id, ...changes });
+async function fixture(state) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1050 } });
+  await context.addInitScript(({ state, key }) => { if (!sessionStorage.getItem('fixture-loaded')) { localStorage.setItem(key, JSON.stringify(state)); sessionStorage.setItem('fixture-loaded', 'yes'); } }, { state, key: SAVE_KEY });
+  const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+  await page.goto(base); await page.waitForSelector('nav');
+  const read = () => page.evaluate(key => JSON.parse(localStorage.getItem(key)), SAVE_KEY);
+  const click = sel => page.locator(sel).first().click();
+  await click('nav [data-page="inventory"]');
+  return { context, page, read, click };
+}
+try {
+  const old = fresh();
+  old.inventory.push(cloneItem(old.inventory[1], 'spare-a', { name: '普通备用锁甲', locked: false }), cloneItem(old.inventory[1], 'spare-b', { name: '珍藏备用锁甲', locked: true }));
+  // Simulate an old save without the protection fields; old gear remains intact.
+  delete old.vault; delete old.pendingLoot; delete old.pauseReason;
+  const first = await fixture(old), { page, click, read } = first;
+  const before = await read();
+  await click('[data-item="iron-maul"]');
+  const comparison = page.locator('[data-compare="dps"]');
+  const oldDps = Number((await comparison.locator('span').nth(1).textContent()).replaceAll(',', ''));
+  const newDps = Number((await comparison.locator('b').textContent()).replaceAll(',', ''));
+  assert.ok(newDps > oldDps, 'physical maul increases current physical damage');
+  assert.equal((await read()).rng, before.rng, 'comparison consumes no RNG');
+  assert.equal((await read()).equipment.weapon.id, before.equipment.weapon.id, 'comparison does not equip');
+  assert.equal(await page.locator('.treasure-art img').evaluate(i => i.complete && i.naturalWidth === 80), true);
+  await page.screenshot({ path: `${out}/comparison-desktop.png`, fullPage: true });
+  await click('[data-equip="iron-maul"]'); assert.equal((await read()).equipment.weapon.id, 'iron-maul');
+  await click('[data-filter="legendary"]'); await click('[data-item="ghost-ring"]'); await click('[data-lock="ghost-ring"]');
+  assert.equal(await page.locator('[data-sell="ghost-ring"]').isDisabled(), true);
+  assert.equal(await page.locator('[data-list="ghost-ring"]').isDisabled(), true);
+  await click('[data-close]'); await click('[data-filter="all"]');
+  const gold = (await read()).gold; await click('[data-act="sellMagic"]'); const sold = await read();
+  assert.equal(sold.gold, gold + old.inventory.find(i => i.id === 'spare-a').value);
+  assert.ok(!sold.inventory.some(i => i.id === 'spare-a')); assert.ok(sold.inventory.some(i => i.id === 'spare-b' && i.locked));
+  assert.ok(sold.inventory.some(i => i.id === 'ghost-ring' && i.locked));
+  assert.equal(sold.equipment.armor.id, 'iron-mail');
+  await page.reload(); await click('nav [data-page="inventory"]'); await click('[data-filter="locked"]');
+  assert.equal(await page.locator('.inventory-list [data-item]').count(), 2);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await click('[data-item="ghost-ring"]');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.equal(await page.locator('#modal').evaluate(el => el.scrollWidth > el.clientWidth), false);
+  await page.screenshot({ path: `${out}/comparison-mobile.png`, fullPage: false });
+  await click('[data-close]');
+  checks.push('old save migration, pure comparison, pixel icons, lock, exact bulk proceeds, mobile detail');
+  await first.context.close();
+
+  const full = fresh(); while (full.inventory.length < 60) full.inventory.push(cloneItem(full.inventory[1], `filler-${full.inventory.length}`, { locked: false }));
+  full.vault = ['vault-a', 'vault-b'].map(id => cloneItem(full.inventory[5], id, { name: id === 'vault-a' ? '铁誓守灯契印' : '霜封记忆', element: 'physical', power: 32, locked: false }));
+  const second = await fixture(full);
+  await second.click('[data-storage="vault"]'); await second.click('[data-item="vault-a"]');
+  assert.equal(await second.page.locator('[data-claim="vault-a"]').isDisabled(), true);
+  await second.click('[data-equip="vault-a"]');
+  const swapped = await second.read(); assert.equal(swapped.inventory.length, 60); assert.equal(swapped.equipment.ring.id, 'vault-a');
+  assert.ok(swapped.vault.some(i => i.id === 'cinder-ring')); assert.equal(swapped.vault.length, 2);
+  await second.click('[data-storage="bag"]'); await second.click('[data-act="sellMagic"]'); await second.click('[data-storage="vault"]');
+  await second.click('[data-item="vault-b"]'); await second.click('[data-claim="vault-b"]'); await second.click('[data-close]');
+  const claimed = await second.read(); assert.ok(claimed.inventory.some(i => i.id === 'vault-b')); assert.ok(!claimed.vault.some(i => i.id === 'vault-b'));
+  checks.push('full-bag vault equip swaps safely; claim never duplicates or loses item');
+  await second.context.close();
+
+  const stopped = fresh(); while (stopped.inventory.length < 60) stopped.inventory.push(cloneItem(stopped.inventory[1], `bag-${stopped.inventory.length}`));
+  stopped.vault = Array.from({ length: 120 }, (_, n) => cloneItem(stopped.inventory[5], `stored-${n}`, { locked: false }));
+  stopped.pendingLoot = cloneItem(stopped.inventory[5], 'pending-gem', { name: '守灯者的最后一诺', locked: false });
+  stopped.running = true; stopped.pauseReason = null; stopped.equipment.ring = null;
+  const third = await fixture(stopped); assert.equal((await third.read()).running, false, 'restoring pending enforces protection');
+  await third.click('[data-item="pending-gem"]'); assert.equal(await third.page.locator('[data-equip="pending-gem"]').isDisabled(), true, 'empty slot with full bag blocks external equip'); await third.click('[data-close]');
+  await third.page.screenshot({ path: `${out}/protected-full-vault.png`, fullPage: true });
+  await third.click('[data-storage="vault"]');
+  assert.equal(await third.page.locator('.inventory-list [data-item]').count(), 24, 'vault paginates long collections');
+  await third.click('[data-item="stored-119"]'); await third.click('[data-sell="stored-119"]');
+  await third.click('[data-item="pending-gem"]'); await third.click('[data-claim="pending-gem"]');
+  const moved = await third.read(); assert.equal(moved.pendingLoot, null); assert.equal(moved.running, false); assert.equal(moved.vault.length, 120);
+  assert.ok(moved.vault.some(i => i.id === 'pending-gem'));
+  const ids = [...moved.inventory, ...moved.vault].map(i => i.id); assert.equal(new Set(ids).size, ids.length);
+  await third.click('[data-close]'); await third.click('nav [data-page="adventure"]'); await third.click('[data-act="pause"]');
+  assert.equal((await third.read()).running, true);
+  await third.page.setViewportSize({ width: 390, height: 844 }); await third.click('nav [data-page="inventory"]');
+  assert.equal(await third.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await third.page.screenshot({ path: `${out}/vault-mobile.png`, fullPage: true });
+  checks.push('full protection pause, pending safe placement, explicit resume, 24-item pagination, mobile vault');
+  await third.context.close();
+  assert.deepEqual(errors, []);
+  await fs.writeFile(`${out}/loot-results.json`, JSON.stringify({ passed: true, checks, errors, base, checkedAt: new Date().toISOString() }, null, 2));
+  console.log(JSON.stringify({ passed: true, checks, errors }));
+} finally { await browser.close(); }

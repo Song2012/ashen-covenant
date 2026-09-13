@@ -1,6 +1,6 @@
 {
   "name": "ashen-covenant",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test src/engine.test.js",
     "test:browser": "node scripts/browser-check.mjs && node scripts/expedition-check.mjs",
-    "balance": "node scripts/balance-report.mjs"
+    "balance": "node scripts/balance-report.mjs",
+    "test:loot": "node scripts/loot-check.mjs"
   },
   "dependencies": {
     "lucide": "^0.468.0",

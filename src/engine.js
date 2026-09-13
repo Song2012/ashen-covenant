@@ -40,9 +40,12 @@ export const ZONES = [
 ];
 
 export const SAVE_KEY = 'ashen-covenant-save-v1';
+export const INVENTORY_CAPACITY = 60;
+export const VAULT_CAPACITY = 120;
 const ELEMENT_NAMES = { fire: '火焰', frost: '冰霜', lightning: '闪电', physical: '物理', poison: '毒素', shadow: '暗影', magic: '魔法' };
 const SLOTS = ['weapon', 'armor', 'ring'];
 const ELEMENTS = Object.keys(ELEMENT_NAMES);
+const cloneItem = item => item ? { ...item, locked: item.locked === true, affixes: [...item.affixes] } : null;
 const itemValid = (i) => i && typeof i.id === 'string' && typeof i.name === 'string' && SLOTS.includes(i.slot) && ['magic', 'rare', 'legendary'].includes(i.rarity) && ELEMENTS.includes(i.element) && ['power', 'bonus', 'value'].every(k => Number.isFinite(i[k]) && i[k] >= 0 && i[k] <= 1e7) && Array.isArray(i.affixes) && i.affixes.every(x => typeof x === 'string');
 const initialItems = () => [
   ['ember-blade', '山脊战斧', 'weapon', 'rare', 22, 'physical', 18, 160],
@@ -53,11 +56,11 @@ const initialItems = () => [
   ['ghost-ring', '亡者的回信', 'ring', 'legendary', 10, 'shadow', 30, 480],
   ['storm-coat', '风暴遗衣', 'armor', 'rare', 21, 'lightning', 20, 170],
   ['iron-maul', '破晓重锤', 'weapon', 'rare', 28, 'physical', 18, 180],
-].map(([id, name, slot, rarity, power, element, bonus, value]) => ({ id, name, slot, rarity, power, element, bonus, value, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`] }));
+].map(([id, name, slot, rarity, power, element, bonus, value]) => ({ id, name, slot, rarity, power, element, bonus, value, locked: false, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`] }));
 
 function freshState() {
   const inventory = initialItems();
-  return { version: 1, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
+  return { version: 1, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, pauseReason: null, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, vault: [], pendingLoot: null, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
     { id: 'market-1', owner: 'market', price: 720, item: { ...inventory[5], id: 'market-ghost', name: '暮钟指环' } },
     { id: 'market-2', owner: 'market', price: 350, item: { ...inventory[3], id: 'market-frost', name: '冬眠枝杖' } },
     { id: 'market-3', owner: 'market', price: 420, item: { ...inventory[6], id: 'market-storm', name: '碎星长衣' } },
@@ -66,7 +69,7 @@ function freshState() {
 
 function restore(raw) {
   const s = freshState();
-  if (!raw || raw.version !== 1 || !Array.isArray(raw.inventory) || raw.inventory.length > 60 || !raw.inventory.every(itemValid)) return s;
+  if (!raw || raw.version !== 1 || !Array.isArray(raw.inventory) || raw.inventory.length > INVENTORY_CAPACITY || !raw.inventory.every(itemValid)) return s;
   for (const k of ['level', 'xp', 'gold', 'shards', 'kills', 'fish', 'savedAt', 'rng', 'sequence']) if (Number.isFinite(raw[k]) && raw[k] >= 0) s[k] = Math.min(raw[k], Number.MAX_SAFE_INTEGER);
   s.level = Math.max(1, Math.floor(s.level));
   s.rng = s.rng >>> 0;
@@ -95,11 +98,43 @@ function restore(raw) {
   s.activity = ['hunt', 'fish', 'boss'].includes(raw.activity) ? raw.activity : 'hunt';
   s.running = typeof raw.running === 'boolean' ? raw.running : true;
   s.progress = Number.isFinite(raw.progress) ? Math.max(0, Math.min(0.999999, raw.progress)) : 0;
-  s.inventory = raw.inventory;
+  const seen = new Set(), listingIds = new Set();
+  let repaired = 0;
+  const candidates = [...raw.inventory, ...(Array.isArray(raw.vault) ? raw.vault : []), raw.pendingLoot, ...(Array.isArray(raw.listings) ? raw.listings.map(l => l?.item) : [])];
+  const lockedIds = new Set(candidates.filter(i => itemValid(i) && i.locked === true).map(i => i.id));
+  const take = item => {
+    if (!itemValid(item) || seen.has(item.id)) { repaired++; return null; }
+    seen.add(item.id);
+    return { ...cloneItem(item), locked: lockedIds.has(item.id) };
+  };
+  s.inventory = raw.inventory.map(take).filter(Boolean);
+  s.pendingLoot = raw.pendingLoot ? take(raw.pendingLoot) : null;
+  if (Array.isArray(raw.vault)) for (const entry of raw.vault) {
+    const item = take(entry); if (!item) continue;
+    if (s.vault.length < VAULT_CAPACITY) s.vault.push(item);
+    else if (s.inventory.length < INVENTORY_CAPACITY) s.inventory.push(item);
+    else if (!s.pendingLoot) s.pendingLoot = item;
+    else repaired++;
+  }
   for (const slot of SLOTS) s.equipment[slot] = s.inventory.find(i => i.id === raw.equipment?.[slot]?.id && i.slot === slot) || null;
-  if (Array.isArray(raw.listings)) s.listings = raw.listings.filter(l => l && typeof l.id === 'string' && ['you', 'market'].includes(l.owner) && itemValid(l.item) && Number.isFinite(l.price) && l.price > 0).slice(0, 80);
+  s.listings = (Array.isArray(raw.listings) ? raw.listings : s.listings).filter(l => l && typeof l.id === 'string' && ['you', 'market'].includes(l.owner) && itemValid(l.item) && Number.isFinite(l.price) && l.price > 0).slice(0, 80).flatMap(l => {
+    if (listingIds.has(l.id)) { repaired++; return []; }
+    const item = take(l.item); if (!item) return [];
+    listingIds.add(l.id); return [{ ...l, item }];
+  });
+  for (const item of [...s.inventory, ...s.vault, ...(s.pendingLoot ? [s.pendingLoot] : []), ...s.listings.map(l => l.item)]) {
+    const match = /^drop-(\d+)$/.exec(item.id);
+    if (match) s.sequence = Math.max(s.sequence, Number(match[1]));
+  }
+  for (const listing of s.listings) {
+    const match = /^listing-(\d+)$/.exec(listing.id);
+    if (match) s.sequence = Math.max(s.sequence, Number(match[1]));
+  }
+  if (s.pendingLoot) { s.running = false; s.pauseReason = 'lootProtection'; }
+  else s.pauseReason = s.running ? null : 'manual';
   if (raw.boss && ['hp', 'maxHp', 'contribution', 'kills'].every(k => Number.isFinite(raw.boss[k]) && raw.boss[k] >= 0) && raw.boss.maxHp > 0) s.boss = { hp: Math.min(raw.boss.hp, raw.boss.maxHp), maxHp: raw.boss.maxHp, contribution: raw.boss.contribution, kills: raw.boss.kills };
   if (Array.isArray(raw.logs)) s.logs = raw.logs.filter(x => typeof x === 'string').slice(0, 30);
+  if (repaired) s.logs = [`已校验存档装备：合并重复物品，忽略 ${repaired} 条重复或无效记录；超出合法容量的异常记录未载入。`, ...s.logs].slice(0, 30);
   if (legacy) s.logs = [`旧契约已迁移为${cls.name}·${cls.builds.find(b => b.id === s.buildId).name}；等级、装备、货币与挂单完整保留，可免费分配技能点。`, ...s.logs].slice(0, 30);
   return s;
 }
@@ -113,11 +148,23 @@ export function createGame(storage) {
   const random = () => { state.rng = (Math.imul(state.rng, 1664525) + 1013904223) >>> 0; return state.rng / 4294967296; };
   const log = message => { state.logs.unshift(message); state.logs.length = Math.min(30, state.logs.length); return message; };
   const equipped = id => SLOTS.some(slot => state.equipment[slot]?.id === id);
+  function findOwned(id) {
+    const bag = state.inventory.find(item => item.id === id);
+    if (bag) return { item: bag, location: 'inventory' };
+    const stored = state.vault.find(item => item.id === id);
+    if (stored) return { item: stored, location: 'vault' };
+    return state.pendingLoot?.id === id ? { item: state.pendingLoot, location: 'pending' } : null;
+  }
+  function removeOwned(found) {
+    if (found.location === 'pending') state.pendingLoot = null;
+    else state[found.location] = state[found.location].filter(item => item.id !== found.item.id);
+  }
+  function protectionMessage() { return '传奇战利品等待处理：请先在行囊中安置、出售或上架待处理装备，再恢复挂机。'; }
   const events = [];
   let suppressEvents = false, lastReward = null;
   const encounterId = () => `${state.activity}:${state.zoneId}:${state.encounterSerial}:${state.activity === 'boss' ? state.boss.kills : state.activity === 'fish' ? state.fish : state.kills}`;
   function emit(type, data = {}) {
-    const event = { id: ++state.eventSequence, type, time: state.simTime, encounterId: encounterId(), activity: state.activity, buildId: state.buildId, ...data };
+    const event = { id: ++state.eventSequence, type, time: state.simTime, encounterId: encounterId(), activity: state.activity, buildId: state.buildId, ...data, ...(data.item ? { item: cloneItem(data.item) } : {}) };
     if (!suppressEvents) { events.push(event); if (events.length > 32) events.shift(); }
     return event;
   }
@@ -148,15 +195,15 @@ export function createGame(storage) {
     }
     state.bossPulseProgress = 0; state.bossPulseDamage = 0; state.bossPulseAllyDamage = 0;
   }
-  function stats() {
+  function stats(equipment = state.equipment) {
     const profession = CLASSES.find(c => c.id === state.classId);
     const build = profession.builds.find(b => b.id === state.buildId);
     const talents = state.talents[state.classId];
     const rank = id => talents[id] || 0;
     const trainingSpent = Object.values(talents).reduce((sum, n) => sum + n, 0);
-    const items = Object.values(state.equipment).filter(Boolean);
+    const items = Object.values(equipment).filter(Boolean);
     const affinity = items.filter(i => i.element === build.element).reduce((sum, i) => sum + i.bonus, 0);
-    const defense = Math.round((10 + state.level * 3 + (state.equipment.armor?.power || 0) * 3) * (1 + rank('ironSkin') * 0.08 + rank('shout') * 0.06));
+    const defense = Math.round((10 + state.level * 3 + (equipment.armor?.power || 0) * 3) * (1 + rank('ironSkin') * 0.08 + rank('shout') * 0.06));
     let damageBonus = build.element === 'physical' ? rank('weaponMastery') * 0.05 + rank('bash') * 0.04 : 0;
     let areaBonus = 0, attackSpeed = 1, bossBonus = 0, armorDamage = 0, magicFindBonus = 0;
     let resistancePenetration = 0;
@@ -168,7 +215,7 @@ export function createGame(storage) {
     if (build.id === 'blizzard') { damageBonus = rank('iceBolt') * 0.04 + rank('blizzard') * 0.08 + rank('coldMastery') * 0.03; areaBonus = 0.15 + rank('blizzard') * 0.02; damageReduction = 0.1; resistancePenetration = 0.1 + rank('coldMastery') * 0.02; }
     if (build.id === 'chainlightning') { damageBonus = rank('chargedBolt') * 0.04 + rank('chainLightning') * 0.08 + rank('lightningMastery') * 0.06; areaBonus = 0.5 + rank('chainLightning') * 0.03; }
     damageReduction = Math.min(0.6, damageReduction);
-    const dps = Math.round((18 + state.level * 4 + (state.equipment.weapon?.power || 0) * 2 + (state.equipment.ring?.power || 0) + armorDamage) * (1 + affinity / 100) * (1 + damageBonus) * attackSpeed);
+    const dps = Math.round((18 + state.level * 4 + (equipment.weapon?.power || 0) * 2 + (equipment.ring?.power || 0) + armorDamage) * (1 + affinity / 100) * (1 + damageBonus) * attackSpeed);
     const zone = ZONES.find(z => z.id === state.zoneId);
     const zoneResistance = zone.element === build.element ? Math.max(0, 0.3 - resistancePenetration) : 0;
     const effectiveDps = Math.round(dps * (1 - zoneResistance));
@@ -177,6 +224,13 @@ export function createGame(storage) {
     const recovery = (1.12 - Math.min(0.2, defense / 800)) * (1 - damageReduction * 0.5);
     const huntSeconds = Math.max(3.5, Math.min(14, zone.seconds * (100 + zone.level * 8) / Math.max(35, effectiveDps * (1 + areaBonus)) * recovery));
     return { dps, defense, magicFind: 15 + items.filter(i => i.rarity === 'legendary').length * 20 + Math.floor(state.level / 2) + magicFindBonus, xpNext: 80 + state.level * 35, element: build.element, effectiveDps, zoneResistance, huntSeconds, attackSpeed, areaBonus, bossDps, damageReduction, trainingSpent, skillPoints: Math.max(0, state.level + 2 - trainingSpent), buildEffect: build.id === 'frenzy' ? `狂乱 ${state.combatStacks}/5 层 · 攻速 +${Math.round((attackSpeed - 1) * 100)}%` : build.mechanic };
+  }
+  function compareItem(id) {
+    const item = findOwned(id)?.item || state.listings.find(l => l.item.id === id)?.item;
+    if (!item) return null;
+    const before = stats(), after = stats({ ...state.equipment, [item.slot]: item });
+    const differences = Object.fromEntries(['dps', 'defense', 'magicFind', 'bossDps', 'huntSeconds'].map(key => [key, after[key] - before[key]]));
+    return { before, after, differences, currentItem: cloneItem(state.equipment[item.slot]), item: cloneItem(item) };
   }
   function experience(amount) {
     state.xp += amount;
@@ -193,15 +247,19 @@ export function createGame(storage) {
     const bonus = Math.round((7 + random() * 12) * tier);
     const prefix = { fire: '余烬', frost: '霜痕', lightning: '裂星', physical: '铁誓', poison: '疫月', shadow: '暮魂', magic: '回响' }[element];
     const name = `${prefix}${{ weapon: '仪式刃', armor: '守夜衣', ring: '契印' }[slot]}${rarity === 'legendary' ? ' · 永寂' : ''}`;
-    const item = { id: `drop-${++state.sequence}`, name, slot, rarity, power, element, bonus, value: Math.round(power * tier * 5), affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`, ...(rarity === 'legendary' ? ['+20% 魔法寻获'] : [])] };
-    if (state.inventory.length >= 60) { state.gold += item.value; log(`背包已满：${name} 已自动出售，获得 ${item.value} 金币。`); }
-    else { state.inventory.push(item); log(`获得${{ magic: '魔法', rare: '稀有', legendary: '传奇' }[rarity]}装备：${name}。`); }
-    return { item, autoSold: !state.inventory.some(i => i.id === item.id) };
+    const item = { id: `drop-${++state.sequence}`, name, slot, rarity, power, element, bonus, value: Math.round(power * tier * 5), locked: false, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`, ...(rarity === 'legendary' ? ['+20% 魔法寻获'] : [])] };
+    let destination;
+    if (state.inventory.length < INVENTORY_CAPACITY) { state.inventory.push(item); destination = 'inventory'; log(`获得${{ magic: '魔法', rare: '稀有', legendary: '传奇' }[rarity]}装备：${name}。`); }
+    else if (rarity !== 'legendary') { state.gold += item.value; destination = 'sold'; log(`背包已满：非传奇装备${name} 已自动出售，获得 ${item.value} 金币。`); }
+    else if (state.vault.length < VAULT_CAPACITY) { state.vault.push(item); destination = 'vault'; log(`传奇保护：${name} 已安全存入保护仓库，未出售。`); }
+    else { state.pendingLoot = item; state.running = false; state.pauseReason = 'lootProtection'; destination = 'pending'; log(`传奇保护暂停：行囊与保护仓库已满，${name} 已保留为待处理装备。处理后才能继续挂机。`); }
+    return { item, autoSold: destination === 'sold', destination };
   }
   function tick(seconds) {
+    if (state.pendingLoot) { state.running = false; state.pauseReason = 'lootProtection'; return; }
     if (!state.running || !Number.isFinite(seconds) || seconds <= 0) return;
     let remaining = Math.min(seconds, 8 * 3600);
-    while (remaining > 0.000001) {
+    while (remaining > 0.000001 && state.running && !state.pendingLoot) {
       const current = stats();
       if (state.activity === 'boss') {
         const id = encounterId();
@@ -289,6 +347,7 @@ export function createGame(storage) {
   function act(type, payload) {
     const id = typeof payload === 'object' && payload !== null ? payload.id : payload;
     let message;
+    if (state.pendingLoot && ['pause', 'activity', 'zone'].includes(type)) { state.running = false; state.pauseReason = 'lootProtection'; return protectionMessage(); }
     if (type === 'class') {
       const cls = CLASSES.find(c => c.id === id); if (!cls) return '职业不存在。';
       if (state.classId !== id) { if (state.activity === 'boss') flushBossHit(); state.classId = id; state.buildId = cls.builds[0].id; state.combatStacks = 0; state.combatStackProgress = 0; }
@@ -313,26 +372,53 @@ export function createGame(storage) {
       const zone = ZONES.find(z => z.id === id); if (!zone) return '区域不存在。'; if (zone.level > state.level) return `需要达到 ${zone.level} 级才能进入。`;
       if (state.zoneId !== id || state.activity !== 'hunt') { if (state.activity === 'boss') flushBossHit(); state.progress = 0; state.encounterSerial++; }
       if (state.activity !== 'hunt') { state.combatStacks = 0; state.combatStackProgress = 0; }
-      state.zoneId = id; state.activity = 'hunt'; state.running = true; message = `前往${zone.name}自动打宝，留意当地的${ELEMENT_NAMES[zone.element]}抗性。`;
+      state.zoneId = id; state.activity = 'hunt'; state.running = true; state.pauseReason = null; message = `前往${zone.name}自动打宝，留意当地的${ELEMENT_NAMES[zone.element]}抗性。`;
     } else if (type === 'activity') {
       if (!['hunt', 'fish', 'boss'].includes(id)) return '活动不存在。';
       if (state.activity !== id) { if (state.activity === 'boss') flushBossHit(); state.progress = id === 'boss' ? 1 - state.boss.hp / state.boss.maxHp : 0; state.combatStacks = 0; state.combatStackProgress = 0; state.encounterSerial++; }
-      state.activity = id; state.running = true;
+      state.activity = id; state.running = true; state.pauseReason = null;
       message = `已切换至${{ hunt: '自动打宝', fish: '幽潭垂钓', boss: '世界首领（本地模拟）' }[id]}。`;
-    } else if (type === 'pause') { state.running = !state.running; message = state.running ? '已恢复自动冒险。' : '已暂停冒险，离线期间也不会推进。';
-    } else if (['equip', 'sell', 'list'].includes(type)) {
-      const item = state.inventory.find(i => i.id === id); if (!item) return '未找到这件装备。';
-      if (type === 'equip') { state.equipment[item.slot] = item; message = `已装备${item.name}。`; }
+    } else if (type === 'pause') { state.running = !state.running; state.pauseReason = state.running ? null : 'manual'; message = state.running ? '已恢复自动冒险。' : '已暂停冒险，离线期间也不会推进。';
+    } else if (type === 'sellMagic') {
+      const eligible = state.inventory.filter(item => item.rarity === 'magic' && !item.locked && !equipped(item.id));
+      const ids = new Set(eligible.map(item => item.id));
+      const proceeds = eligible.reduce((sum, item) => sum + item.value, 0);
+      state.inventory = state.inventory.filter(item => !ids.has(item.id)); state.gold += proceeds;
+      message = `出售 ${eligible.length} 件未锁定、未装备的魔法装备，获得 ${proceeds} 金币。`;
+    } else if (['equip', 'sell', 'list', 'claim', 'lock'].includes(type)) {
+      const found = findOwned(id); if (!found) return '未找到这件装备。';
+      const { item, location } = found;
+      if (type === 'lock') { item.locked = !item.locked; message = `${item.name}已${item.locked ? '锁定，禁止出售与上架' : '解锁'}。`; }
+      else if (type === 'claim') {
+        if (location === 'inventory') return '这件装备已经在行囊中。';
+        if (state.inventory.length < INVENTORY_CAPACITY) { removeOwned(found); state.inventory.push(item); message = `${item.name}已领取到行囊。`; }
+        else if (location === 'pending' && state.vault.length < VAULT_CAPACITY) { removeOwned(found); state.vault.push(item); message = `${item.name}已安全存入保护仓库。`; }
+        else return '行囊已满，请先腾出空间；装备仍安全保留，未被移动或出售。';
+      } else if (type === 'equip') {
+        if (location !== 'inventory') {
+          if (state.inventory.length >= INVENTORY_CAPACITY) {
+            const old = state.equipment[item.slot];
+            if (!old || !state.inventory.some(i => i.id === old.id)) return '行囊已满且该装备位为空，请先腾出一格再装备。';
+            state.inventory = state.inventory.filter(i => i.id !== old.id);
+            removeOwned(found);
+            if (location === 'vault') state.vault.push(old); else state.pendingLoot = old;
+            message = `已装备${item.name}；旧装备${old.name}转入${location === 'vault' ? '保护仓库' : '待处理位置，仍需安置后才能恢复挂机'}。`;
+          } else removeOwned(found);
+          state.inventory.push(item);
+        }
+        state.equipment[item.slot] = item; message ||= `已装备${item.name}。`;
+      }
       else {
+        if (item.locked) return '这件装备已锁定，请先解锁后再出售或上架。';
         if (equipped(id)) return '请先替换身上装备，再进行出售或上架。';
         if (type === 'list' && state.listings.filter(l => l.owner === 'you').length >= 20) return '最多同时上架 20 件装备。';
-        state.inventory = state.inventory.filter(i => i.id !== id);
+        removeOwned(found);
         if (type === 'sell') { state.gold += item.value; message = `出售${item.name}，获得 ${item.value} 金币。`; }
         else { const price = Math.round(item.value * 1.5); state.listings.push({ id: `listing-${++state.sequence}`, owner: 'you', price, item }); message = `${item.name} 已以 ${price} 金币上架本地交易演示；可随时撤回。`; }
       }
     } else if (type === 'buy' || type === 'cancel') {
       const listing = state.listings.find(l => l.id === id); if (!listing) return '该商品已不存在。';
-      if (state.inventory.length >= 60) return '背包已满，请先整理装备。';
+      if (state.inventory.length >= INVENTORY_CAPACITY) return '背包已满，请先整理装备。';
       if (type === 'cancel' && listing.owner !== 'you') return '只能撤回自己的商品。';
       if (type === 'buy' && listing.owner === 'you') return '这是你的商品，请使用撤回。';
       if (type === 'buy' && state.gold < listing.price) return '金币不足。';
@@ -343,18 +429,19 @@ export function createGame(storage) {
       if (state.fish < 1) return '还没有鱼获，先去幽潭垂钓吧。';
       const count = state.fish; state.fish = 0; state.gold += count * 35; experience(count * 12); message = `交付 ${count} 条幽光鱼，获得 ${count * 35} 金币、${count * 12} 经验。`;
     } else return '未知操作。';
+    if (state.pauseReason === 'lootProtection' && !state.pendingLoot) { state.pauseReason = 'manual'; state.running = false; message += '待处理装备已安置，可点击继续挂机。'; }
     log(message); save(); return message;
   }
   const elapsed = Math.max(0, Math.min(8 * 3600, (Date.now() - state.savedAt) / 1000));
   if (elapsed >= 30 && state.running) {
-    const before = { gold: state.gold, kills: state.kills, fish: state.fish, level: state.level };
+    const before = { gold: state.gold, kills: state.kills, fish: state.fish, level: state.level, simTime: state.simTime, vault: state.vault.length };
     suppressEvents = true;
     tick(elapsed);
     suppressEvents = false;
     state.bossPulseDamage = 0; state.bossPulseAllyDamage = 0;
-    state.offlineSummary = `离线 ${Math.floor(elapsed / 60)} 分钟（最多结算 8 小时）：金币 +${state.gold - before.gold}，击败 ${state.kills - before.kills} 个敌人，鱼获 +${state.fish - before.fish}，等级 +${state.level - before.level}。`;
+    state.offlineSummary = `离线 ${Math.floor(elapsed / 60)} 分钟（最多结算 8 小时）：金币 +${state.gold - before.gold}，击败 ${state.kills - before.kills} 个敌人，鱼获 +${state.fish - before.fish}，等级 +${state.level - before.level}，保护仓库 +${state.vault.length - before.vault} 件。${state.pendingLoot ? `实际结算 ${Math.floor((state.simTime - before.simTime) / 60)} 分钟后触发传奇保护暂停；待处理装备已保留，后续离线时间未继续战斗。` : ''}`;
     log(state.offlineSummary);
   } else state.offlineSummary = '';
   save();
-  return { state, stats, tick, act, save, combat, eventsSince };
+  return { state, stats, tick, act, save, combat, eventsSince, compareItem };
 }

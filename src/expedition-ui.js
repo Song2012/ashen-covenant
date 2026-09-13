@@ -39,5 +39,6 @@ export function updateCombatHud(game) {
   document.querySelector('#enemy-health').style.width = `${Math.max(0, Math.min(100, percent))}%`;
   document.querySelector('#encounter-trait').textContent = view.activity === 'boss' ? '你的伤害与模拟同伴共同结算' : view.monster?.trait || '鱼获与偶得的宝物自动入账';
   document.querySelector('#encounter-hp').textContent = view.monster ? `${number(view.monster.hp)} / ${number(view.monster.maxHp)}` : `${Math.floor(view.progress * 100)}% · ${number(state.fish)} 尾`;
-  document.querySelector('#scene-caption').textContent = !state.running ? '远征已暂停' : ['defeat', 'loot'].includes(view.phase) ? `${view.monster.name}已倒下 · ${view.phase === 'loot' ? '正在拾取战利品' : '即将收集战利品'}` : view.lastReward?.item ? `最近拾取：${view.lastReward.item.name}${view.lastReward.autoSold ? '（行囊已满，自动出售）' : ''}` : view.activity === 'hunt' ? `本轮第 ${Math.min(3, view.attackIndex + 1)} 次出手 · 战斗与拾取全自动` : phases[view.phase];
+  const destination = view.lastReward?.destination;
+  document.querySelector('#scene-caption').textContent = state.pendingLoot ? '宝物已安全保留 · 整理后可继续远征' : !state.running ? '远征已暂停' : ['defeat', 'loot'].includes(view.phase) ? `${view.monster.name}已倒下 · ${view.phase === 'loot' ? '正在拾取战利品' : '即将收集战利品'}` : view.lastReward?.item ? `最近拾取：${view.lastReward.item.name}${destination === 'vault' ? '（已收入保管箱）' : view.lastReward.autoSold ? '（行囊已满，自动出售）' : ''}` : view.activity === 'hunt' ? `本轮第 ${Math.min(3, view.attackIndex + 1)} 次出手 · 战斗与拾取全自动` : phases[view.phase];
 }
