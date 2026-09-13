@@ -1,5 +1,7 @@
 # 灰烬契约 · Ashen Covenant
 
+**[直接在线游玩](https://song2012.github.io/ashen-covenant/)** · [GitHub 仓库](https://github.com/Song2012/ashen-covenant)
+
 原创像素暗黑放置 RPG 可玩原型。中文界面，Three.js 像素舞台，Vite 构建。参考暗黑式装备养成与流派决策，不使用原作人物、美术或物品名称。
 
 ## 运行
