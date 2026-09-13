@@ -1,3 +1,9 @@
+import { getMonster } from './encounters.js';
+
+const HIT_FRACTIONS = [0.25, 0.52, 0.8];
+const HP_FRACTIONS = [1, 0.7, 0.38, 0];
+const hitCount = progress => HIT_FRACTIONS.filter(p => progress >= p - 1e-10).length;
+const monsterHp = (maxHp, attackIndex) => Math.round(maxHp * HP_FRACTIONS[attackIndex]);
 const skill = (id, name, desc) => ({ id, name, desc, maxRank: 10 });
 export const CLASSES = [
   { id: 'barbarian', name: '野蛮人', subtitle: '战斗技能 · 战斗专家 · 呐喊',
@@ -51,7 +57,7 @@ const initialItems = () => [
 
 function freshState() {
   const inventory = initialItems();
-  return { version: 1, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
+  return { version: 1, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
     { id: 'market-1', owner: 'market', price: 720, item: { ...inventory[5], id: 'market-ghost', name: '暮钟指环' } },
     { id: 'market-2', owner: 'market', price: 350, item: { ...inventory[3], id: 'market-frost', name: '冬眠枝杖' } },
     { id: 'market-3', owner: 'market', price: 420, item: { ...inventory[6], id: 'market-storm', name: '碎星长衣' } },
@@ -64,6 +70,9 @@ function restore(raw) {
   for (const k of ['level', 'xp', 'gold', 'shards', 'kills', 'fish', 'savedAt', 'rng', 'sequence']) if (Number.isFinite(raw[k]) && raw[k] >= 0) s[k] = Math.min(raw[k], Number.MAX_SAFE_INTEGER);
   s.level = Math.max(1, Math.floor(s.level));
   s.rng = s.rng >>> 0;
+  for (const key of ['simTime', 'eventSequence', 'encounterSerial', 'bossPulseDamage', 'bossPulseAllyDamage', 'bossAttackIndex']) if (Number.isFinite(raw[key]) && raw[key] >= 0) s[key] = Math.min(raw[key], Number.MAX_SAFE_INTEGER);
+  for (const key of ['eventSequence', 'encounterSerial', 'bossAttackIndex']) s[key] = Math.floor(s[key]);
+  s.bossPulseProgress = Number.isFinite(raw.bossPulseProgress) ? Math.max(0, Math.min(0.999999999, raw.bossPulseProgress)) : 0;
   const legacy = { knight: { classId: 'barbarian', buildId: raw.buildId === 'steel' ? 'warcry' : 'whirlwind' }, witch: { classId: 'sorceress', buildId: raw.buildId === 'storm' ? 'chainlightning' : 'blizzard' }, reaper: { classId: 'sorceress', buildId: 'fireball' } }[raw.classId];
   s.classId = legacy?.classId || (CLASSES.some(c => c.id === raw.classId) ? raw.classId : s.classId);
   const cls = CLASSES.find(c => c.id === s.classId);
@@ -104,6 +113,41 @@ export function createGame(storage) {
   const random = () => { state.rng = (Math.imul(state.rng, 1664525) + 1013904223) >>> 0; return state.rng / 4294967296; };
   const log = message => { state.logs.unshift(message); state.logs.length = Math.min(30, state.logs.length); return message; };
   const equipped = id => SLOTS.some(slot => state.equipment[slot]?.id === id);
+  const events = [];
+  let suppressEvents = false, lastReward = null;
+  const encounterId = () => `${state.activity}:${state.zoneId}:${state.encounterSerial}:${state.activity === 'boss' ? state.boss.kills : state.activity === 'fish' ? state.fish : state.kills}`;
+  function emit(type, data = {}) {
+    const event = { id: ++state.eventSequence, type, time: state.simTime, encounterId: encounterId(), activity: state.activity, buildId: state.buildId, ...data };
+    if (!suppressEvents) { events.push(event); if (events.length > 32) events.shift(); }
+    return event;
+  }
+  function eventsSince(id = 0) {
+    // Callers receive detached snapshots and cannot mutate authoritative state.
+    return events.filter(event => event.id > id).map(event => ({ ...event, ...(event.item ? { item: { ...event.item, affixes: [...event.item.affixes] } } : {}) }));
+  }
+  function combat() {
+    const id = encounterId();
+    const progress = state.activity === 'boss' ? 1 - state.boss.hp / state.boss.maxHp : state.progress;
+    const attackIndex = state.activity === 'hunt' ? hitCount(progress) : state.activity === 'boss' ? state.bossAttackIndex : 0;
+    const monster = state.activity === 'hunt' ? getMonster(state.zoneId, state.kills) : state.activity === 'boss' ? { id: 'boss-morlgas', name: '骸冠君王·莫尔迦斯', family: 'brute', lore: '无名者将熄灭的王冠戴回了头上。', trait: '世界首领 · 同伴为本地模拟', color: '#c19170', maxHp: state.boss.maxHp, elite: true } : null;
+    if (monster) monster.hp = state.activity === 'boss' ? state.boss.hp : monsterHp(monster.maxHp, attackIndex);
+    let phase = state.activity === 'fish' ? 'fishing' : state.activity === 'boss' ? 'attack' : progress < 0.15 ? 'approach' : progress < 0.8 - 1e-10 ? 'attack' : progress < 0.9 ? 'defeat' : 'loot';
+    if (!state.running) phase = 'paused';
+    const start = attackIndex === 0 ? 0 : HIT_FRACTIONS[attackIndex - 1];
+    const attackProgress = state.activity === 'hunt' && attackIndex < 3 ? Math.max(0, Math.min(1, (progress - start) / (HIT_FRACTIONS[attackIndex] - start))) : state.activity === 'boss' ? state.bossPulseProgress : 0;
+    return { id, activity: state.activity, phase, progress, monster, attackIndex, attackProgress, killCount: state.kills, bossKills: state.boss.kills, lastReward: lastReward ? { ...lastReward, ...(lastReward.item ? { item: { ...lastReward.item, affixes: [...lastReward.item.affixes] } } : {}) } : null };
+  }
+  function rewardEvent(data) {
+    const event = emit('loot', data);
+    if (!suppressEvents) lastReward = event;
+  }
+  function flushBossHit() {
+    if (state.bossPulseDamage + state.bossPulseAllyDamage > 0) {
+      state.bossAttackIndex++;
+      emit('bossHit', { monsterId: 'boss-morlgas', target: '骸冠君王·莫尔迦斯', damage: state.bossPulseDamage, allyDamage: state.bossPulseAllyDamage, hp: state.boss.hp, maxHp: state.boss.maxHp, attackIndex: state.bossAttackIndex });
+    }
+    state.bossPulseProgress = 0; state.bossPulseDamage = 0; state.bossPulseAllyDamage = 0;
+  }
   function stats() {
     const profession = CLASSES.find(c => c.id === state.classId);
     const build = profession.builds.find(b => b.id === state.buildId);
@@ -152,6 +196,7 @@ export function createGame(storage) {
     const item = { id: `drop-${++state.sequence}`, name, slot, rarity, power, element, bonus, value: Math.round(power * tier * 5), affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`, ...(rarity === 'legendary' ? ['+20% 魔法寻获'] : [])] };
     if (state.inventory.length >= 60) { state.gold += item.value; log(`背包已满：${name} 已自动出售，获得 ${item.value} 金币。`); }
     else { state.inventory.push(item); log(`获得${{ magic: '魔法', rare: '稀有', legendary: '传奇' }[rarity]}装备：${name}。`); }
+    return { item, autoSold: !state.inventory.some(i => i.id === item.id) };
   }
   function tick(seconds) {
     if (!state.running || !Number.isFinite(seconds) || seconds <= 0) return;
@@ -159,11 +204,19 @@ export function createGame(storage) {
     while (remaining > 0.000001) {
       const current = stats();
       if (state.activity === 'boss') {
+        const id = encounterId();
         const rate = current.bossDps + 225;
         const chargingFrenzy = state.buildId === 'frenzy' && state.combatStacks < 5;
-        const step = Math.min(remaining, state.boss.hp / rate, chargingFrenzy ? 4 - state.combatStackProgress : Infinity);
+        const step = Math.min(remaining, state.boss.hp / rate, chargingFrenzy ? 4 - state.combatStackProgress : Infinity, 1 - state.bossPulseProgress);
         state.boss.hp = Math.max(0, state.boss.hp - step * rate);
         state.boss.contribution += step * current.bossDps;
+        state.bossPulseProgress += step;
+        state.bossPulseDamage += step * current.bossDps;
+        state.bossPulseAllyDamage += step * 225;
+        state.simTime += step;
+        if (state.bossPulseProgress >= 1 - 1e-10 || state.boss.hp < 0.00001) {
+          flushBossHit();
+        }
         if (chargingFrenzy) {
           state.combatStackProgress += step;
           if (state.combatStackProgress >= 4 - 0.0000001) { state.combatStacks++; state.combatStackProgress = 0; }
@@ -171,28 +224,49 @@ export function createGame(storage) {
         remaining -= step;
         state.progress = 1 - state.boss.hp / state.boss.maxHp;
         if (state.boss.hp < 0.00001) {
-          state.boss.kills++; state.gold += 420; state.shards += 8; experience(120); loot(true);
+          emit('bossDefeat', { encounterId: id, monsterId: 'boss-morlgas', target: '骸冠君王·莫尔迦斯', hp: 0, maxHp: state.boss.maxHp, contribution: state.boss.contribution });
+          state.boss.kills++; state.gold += 420; state.shards += 8; experience(120);
+          const drop = loot(true);
+          rewardEvent({ encounterId: id, monsterId: 'boss-morlgas', target: '骸冠君王·莫尔迦斯', gold: 420 + (drop.autoSold ? drop.item.value : 0), xp: 120, shards: 8, ...drop });
           log('世界首领「骸冠君王·莫尔迦斯」已倒下：获得 420 金币、8 余烬与传奇战利品。（同伴为本地模拟）');
-          state.boss.hp = state.boss.maxHp; state.boss.contribution = 0; state.progress = 0;
+          state.boss.hp = state.boss.maxHp; state.boss.contribution = 0; state.progress = 0; state.bossAttackIndex = 0;
         }
       } else {
+        const id = encounterId();
+        const monster = state.activity === 'hunt' ? getMonster(state.zoneId, state.kills) : null;
         const duration = state.activity === 'fish' ? 8 : current.huntSeconds;
+        const previousProgress = state.progress;
+        const previousTime = state.simTime;
         const step = Math.min(remaining, (1 - state.progress) * duration);
         state.progress += step / duration;
+        state.simTime += step;
+        if (monster) {
+          for (let index = hitCount(previousProgress); index < hitCount(state.progress); index++) {
+            const time = previousTime + (HIT_FRACTIONS[index] - previousProgress) * duration;
+            const hp = monsterHp(monster.maxHp, index + 1);
+            emit('hit', { encounterId: id, monsterId: monster.id, target: monster.name, time, damage: monsterHp(monster.maxHp, index) - hp, hp, maxHp: monster.maxHp, attackIndex: index + 1, elite: monster.elite });
+            if (index === 2) emit('defeat', { encounterId: id, monsterId: monster.id, target: monster.name, time, hp: 0, maxHp: monster.maxHp, elite: monster.elite });
+          }
+        }
         remaining -= step;
         if (state.progress >= 1 - 0.0000001) {
           state.progress = 0;
           if (state.activity === 'fish') {
             state.fish++; experience(9);
-            if (random() < 0.1) { state.shards++; log('钓起一枚水浸的余烬。'); }
+            const shards = random() < 0.1 ? 1 : 0;
+            if (shards) { state.shards++; log('钓起一枚水浸的余烬。'); }
             else log('钓获幽光鱼 ×1，可兑换金币与经验。');
-            if (random() < 0.04) { log('鱼钩带起一只沉没的宝匣。'); loot(); }
+            const caught = emit('fish', { encounterId: id, target: '幽光鱼', count: 1, xp: 9, shards });
+            if (!suppressEvents) lastReward = caught;
+            if (random() < 0.04) { log('鱼钩带起一只沉没的宝匣。'); const drop = loot(); rewardEvent({ encounterId: id, target: '沉没的宝匣', gold: drop.autoSold ? drop.item.value : 0, ...drop }); }
           }
           else {
             const zone = ZONES.find(z => z.id === state.zoneId);
             if (state.buildId === 'frenzy') state.combatStacks = Math.min(5, state.combatStacks + 1);
             state.kills++; state.gold += 13 + zone.level * 4; experience(15 + zone.level * 3);
-            if (random() < 0.7) loot(); else log(`击败 ${zone.name} 的游魂，获得金币与经验。`);
+            let drop = {};
+            if (random() < 0.7) drop = loot(); else log(`击败 ${zone.name} 的游魂，获得金币与经验。`);
+            rewardEvent({ encounterId: id, monsterId: monster.id, target: monster.name, gold: 13 + zone.level * 4 + (drop.autoSold ? drop.item.value : 0), xp: 15 + zone.level * 3, ...drop });
           }
         }
       }
@@ -217,11 +291,11 @@ export function createGame(storage) {
     let message;
     if (type === 'class') {
       const cls = CLASSES.find(c => c.id === id); if (!cls) return '职业不存在。';
-      if (state.classId !== id) { state.classId = id; state.buildId = cls.builds[0].id; state.combatStacks = 0; state.combatStackProgress = 0; }
+      if (state.classId !== id) { if (state.activity === 'boss') flushBossHit(); state.classId = id; state.buildId = cls.builds[0].id; state.combatStacks = 0; state.combatStackProgress = 0; }
       message = `当前职业${cls.name}，各职业独立保留技能分配。`;
     } else if (type === 'build') {
       const build = CLASSES.find(c => c.id === state.classId).builds.find(b => b.id === id); if (!build) return '该职业无法使用此流派。';
-      if (state.buildId !== id) { state.buildId = id; state.combatStacks = 0; state.combatStackProgress = 0; }
+      if (state.buildId !== id) { if (state.activity === 'boss') flushBossHit(); state.buildId = id; state.combatStacks = 0; state.combatStackProgress = 0; }
       message = `已启用${build.name}：技能自动施放，同属性词缀将提高伤害。`;
     } else if (type === 'train') {
       const cls = CLASSES.find(c => c.id === state.classId);
@@ -237,12 +311,12 @@ export function createGame(storage) {
       message = `当前职业技能已免费重置，${state.level + 2} 点技能点可重新分配。`;
     } else if (type === 'zone') {
       const zone = ZONES.find(z => z.id === id); if (!zone) return '区域不存在。'; if (zone.level > state.level) return `需要达到 ${zone.level} 级才能进入。`;
-      if (state.zoneId !== id || state.activity !== 'hunt') state.progress = 0;
+      if (state.zoneId !== id || state.activity !== 'hunt') { if (state.activity === 'boss') flushBossHit(); state.progress = 0; state.encounterSerial++; }
       if (state.activity !== 'hunt') { state.combatStacks = 0; state.combatStackProgress = 0; }
       state.zoneId = id; state.activity = 'hunt'; state.running = true; message = `前往${zone.name}自动打宝，留意当地的${ELEMENT_NAMES[zone.element]}抗性。`;
     } else if (type === 'activity') {
       if (!['hunt', 'fish', 'boss'].includes(id)) return '活动不存在。';
-      if (state.activity !== id) { state.progress = id === 'boss' ? 1 - state.boss.hp / state.boss.maxHp : 0; state.combatStacks = 0; state.combatStackProgress = 0; }
+      if (state.activity !== id) { if (state.activity === 'boss') flushBossHit(); state.progress = id === 'boss' ? 1 - state.boss.hp / state.boss.maxHp : 0; state.combatStacks = 0; state.combatStackProgress = 0; state.encounterSerial++; }
       state.activity = id; state.running = true;
       message = `已切换至${{ hunt: '自动打宝', fish: '幽潭垂钓', boss: '世界首领（本地模拟）' }[id]}。`;
     } else if (type === 'pause') { state.running = !state.running; message = state.running ? '已恢复自动冒险。' : '已暂停冒险，离线期间也不会推进。';
@@ -274,10 +348,13 @@ export function createGame(storage) {
   const elapsed = Math.max(0, Math.min(8 * 3600, (Date.now() - state.savedAt) / 1000));
   if (elapsed >= 30 && state.running) {
     const before = { gold: state.gold, kills: state.kills, fish: state.fish, level: state.level };
+    suppressEvents = true;
     tick(elapsed);
+    suppressEvents = false;
+    state.bossPulseDamage = 0; state.bossPulseAllyDamage = 0;
     state.offlineSummary = `离线 ${Math.floor(elapsed / 60)} 分钟（最多结算 8 小时）：金币 +${state.gold - before.gold}，击败 ${state.kills - before.kills} 个敌人，鱼获 +${state.fish - before.fish}，等级 +${state.level - before.level}。`;
     log(state.offlineSummary);
   } else state.offlineSummary = '';
   save();
-  return { state, stats, tick, act, save };
+  return { state, stats, tick, act, save, combat, eventsSince };
 }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGame, SAVE_KEY, CLASSES } from './engine.js';
+import { MONSTERS, getMonster } from './encounters.js';
 
 const memory = () => { const data = new Map(); return { getItem: k => data.get(k) || null, setItem: (k, v) => data.set(k, v) }; };
 
@@ -368,4 +369,220 @@ test('offline-size batches match small online ticks, including frenzy stack boun
     assert.ok(Math.abs(stepped.state.boss.hp - batched.state.boss.hp) < 1e-6, `${activity}/boss hp`);
     assert.ok(Math.abs(stepped.state.boss.contribution - batched.state.boss.contribution) < 1e-6, `${activity}/contribution`);
   }
+});
+
+test('twelve deterministic monsters vary by zone; every fifth encounter is cosmetic elite only', () => {
+  assert.equal(Object.values(MONSTERS).flat().length, 12);
+  assert.equal(new Set(Object.values(MONSTERS).flat().map(m => m.id)).size, 12);
+  for (const zone of Object.keys(MONSTERS)) {
+    assert.equal(new Set([0, 1, 2].map(k => getMonster(zone, k).id)).size, 3);
+    assert.equal(getMonster(zone, 3).elite, false);
+    assert.equal(getMonster(zone, 4).elite, true);
+    assert.equal(getMonster(zone, 9).elite, true);
+    assert.equal(getMonster(zone, 4).maxHp, getMonster(zone, 1).maxHp);
+  }
+  const game = createGame(memory());
+  const seed = game.state.rng;
+  for (let i = 0; i < 30; i++) { game.combat(); getMonster('crypt', i); }
+  assert.equal(game.state.rng, seed);
+});
+
+test('hunt produces exactly three real hits, a death window and one authoritative reward', () => {
+  const game = createGame(memory());
+  const initial = game.combat();
+  const duration = game.stats().huntSeconds;
+  assert.equal(initial.phase, 'approach');
+  game.tick(duration * 0.249);
+  assert.equal(game.eventsSince().length, 0);
+  game.tick(duration * 0.001);
+  assert.equal(game.combat().attackIndex, 1);
+  assert.equal(game.eventsSince().length, 1);
+  const first = game.eventsSince()[0];
+  assert.equal(first.damage, initial.monster.maxHp - game.combat().monster.hp);
+  game.tick(duration * 0.55);
+  assert.equal(game.combat().phase, 'defeat');
+  assert.equal(game.combat().monster.hp, 0);
+  assert.equal(game.combat().attackProgress, 0);
+  const damageEvents = game.eventsSince().filter(e => e.type === 'hit');
+  assert.equal(damageEvents.length, 3);
+  assert.equal(damageEvents.reduce((sum, e) => sum + e.damage, 0), initial.monster.maxHp);
+  assert.equal(game.eventsSince().filter(e => e.type === 'defeat').length, 1);
+  assert.equal(game.state.kills, 0, 'settlement remains at the original full round boundary');
+  const cursor = game.eventsSince().at(-1).id;
+  game.tick(duration * 0.1);
+  assert.equal(game.combat().phase, 'loot');
+  assert.equal(game.eventsSince(cursor).length, 0, 'no attacks against a dead target');
+  const gold = game.state.gold;
+  game.tick(duration * 0.1);
+  assert.equal(game.state.kills, 1);
+  assert.notEqual(game.combat().id, initial.id);
+  const reward = game.eventsSince(cursor).find(e => e.type === 'loot');
+  assert.equal(reward.encounterId, initial.id);
+  assert.equal(reward.gold, game.state.gold - gold);
+  assert.equal(game.combat().lastReward.id, reward.id);
+});
+
+test('event queue is cursor-based, bounded, unique and detached from inventory', () => {
+  const game = createGame(memory());
+  game.tick(300);
+  const events = game.eventsSince();
+  assert.equal(events.length, 32);
+  assert.equal(new Set(events.map(e => e.id)).size, 32);
+  assert.ok(events.every((e, i) => i === 0 || e.id > events[i - 1].id));
+  assert.equal(game.eventsSince(events.at(-1).id).length, 0);
+  const drop = events.find(e => e.item);
+  assert.ok(drop);
+  const item = game.state.inventory.find(i => i.id === drop.item.id);
+  const name = item.name;
+  drop.item.name = 'caller mutation'; drop.item.affixes[0] = 'caller mutation';
+  assert.equal(item.name, name);
+  assert.notEqual(item.affixes[0], 'caller mutation');
+});
+
+test('pause and activity switches cannot replay attacks or attach old damage to a new encounter', () => {
+  const game = createGame(memory());
+  game.tick(game.stats().huntSeconds * 0.3);
+  const before = game.combat();
+  const cursor = game.eventsSince().at(-1).id;
+  game.act('pause');
+  game.tick(100);
+  assert.equal(game.combat().phase, 'paused');
+  assert.equal(game.combat().monster.hp, before.monster.hp);
+  assert.equal(game.eventsSince(cursor).length, 0);
+  game.act('activity', 'fish');
+  assert.equal(game.combat().monster, null);
+  game.tick(8);
+  const catches = game.eventsSince(cursor);
+  assert.ok(catches.some(e => e.type === 'fish'));
+  assert.ok(catches.every(e => e.type === 'fish' || e.type === 'loot'));
+  game.act('zone', 'grave');
+  const returned = game.combat();
+  assert.notEqual(returned.id, before.id);
+  assert.equal(returned.monster.hp, returned.monster.maxHp);
+  assert.equal(returned.attackIndex, 0);
+});
+
+test('restoring an in-progress save derives monster HP but never replays recorded or offline hits', () => {
+  const storage = memory();
+  const game = createGame(storage);
+  game.tick(game.stats().huntSeconds * 0.6);
+  game.save();
+  const oldCursor = game.eventsSince().at(-1).id;
+  const restored = createGame(storage);
+  assert.equal(restored.eventsSince().length, 0);
+  assert.equal(restored.combat().attackIndex, 2);
+  assert.equal(restored.combat().monster.hp, game.combat().monster.hp);
+  restored.tick(restored.stats().huntSeconds * 0.21);
+  assert.equal(restored.eventsSince(oldCursor).filter(e => e.type === 'hit').length, 1);
+  assert.ok(restored.eventsSince().every(e => e.id > oldCursor));
+  restored.save();
+  const raw = JSON.parse(storage.getItem(SAVE_KEY));
+  raw.savedAt = Date.now() - 3600000;
+  storage.setItem(SAVE_KEY, JSON.stringify(raw));
+  const offline = createGame(storage);
+  assert.equal(offline.eventsSince().length, 0);
+  assert.equal(offline.combat().lastReward, null);
+  assert.ok(offline.state.kills > game.state.kills);
+  const offlineSequence = offline.state.eventSequence;
+  offline.tick(15);
+  assert.ok(offline.eventsSince().every(e => e.id > offlineSequence));
+});
+
+test('boss hit events account for actual player and ally damage with fixed cadence across tick sizes', () => {
+  const batch = createGame(memory()), small = createGame(memory());
+  for (const game of [batch, small]) { game.act('build', 'frenzy'); game.act('activity', 'boss'); }
+  const initial = batch.state.boss.hp;
+  batch.tick(10);
+  for (let i = 0; i < 100; i++) small.tick(0.1);
+  const a = batch.eventsSince(), b = small.eventsSince();
+  assert.equal(a.length, 10);
+  assert.equal(b.length, 10);
+  assert.ok(a.every(e => e.type === 'bossHit'));
+  assert.ok(Math.abs(a.reduce((sum, e) => sum + e.damage + e.allyDamage, 0) - (initial - batch.state.boss.hp)) < 1e-7);
+  assert.ok(Math.abs(a.reduce((sum, e) => sum + e.damage, 0) - batch.state.boss.contribution) < 1e-7);
+  for (let i = 0; i < a.length; i++) {
+    assert.equal(a[i].id, b[i].id);
+    assert.ok(Math.abs(a[i].damage - b[i].damage) < 1e-7);
+    assert.ok(Math.abs(a[i].time - b[i].time) < 1e-7);
+  }
+  batch.state.boss.hp = 10;
+  const cursor = a.at(-1).id;
+  batch.tick(0.1);
+  const final = batch.eventsSince(cursor);
+  assert.equal(final[0].type, 'bossHit');
+  assert.ok(Math.abs(final[0].damage + final[0].allyDamage - 10) < 1e-7);
+  assert.equal(final[1].type, 'bossDefeat');
+  assert.equal(final[2].type, 'loot');
+  assert.equal(final[2].item.rarity, 'legendary');
+});
+
+test('hunt event timing and identities are independent of online tick size', () => {
+  const batch = createGame(memory()), small = createGame(memory());
+  batch.tick(25);
+  for (let i = 0; i < 250; i++) small.tick(0.1);
+  const a = batch.eventsSince(), b = small.eventsSince();
+  assert.equal(a.length, b.length);
+  for (let i = 0; i < a.length; i++) {
+    assert.equal(a[i].id, b[i].id);
+    assert.equal(a[i].type, b[i].type);
+    assert.equal(a[i].encounterId, b[i].encounterId);
+    assert.equal(a[i].damage, b[i].damage);
+    assert.ok(Math.abs(a[i].time - b[i].time) < 1e-7);
+  }
+  assert.equal(batch.state.rng, small.state.rng);
+});
+
+test('v0.3 one-hour reward baseline remains unchanged for all six builds', () => {
+  const baseline = { whirlwind: [29,164515,952,1900120855], frenzy: [29,169753,971,3259712130], warcry: [25,111407,711,1357681852], fireball: [20,64599,471,4271917375], blizzard: [23,90658,609,4185180971], chainlightning: [27,131638,807,76333626] };
+  for (const cls of CLASSES) for (const build of cls.builds) {
+    const game = createGame(memory());
+    game.act('class', cls.id); game.act('build', build.id); game.tick(3600);
+    assert.deepEqual([game.state.level, game.state.gold, game.state.kills, game.state.rng], baseline[build.id], build.id);
+  }
+});
+
+test('legacy saves without encounter fields resume at the correct hit boundary', () => {
+  const storage = memory();
+  createGame(storage);
+  const raw = JSON.parse(storage.getItem(SAVE_KEY));
+  for (const key of ['simTime', 'eventSequence', 'encounterSerial', 'bossPulseProgress', 'bossPulseDamage', 'bossPulseAllyDamage', 'bossAttackIndex']) delete raw[key];
+  raw.progress = 0.52;
+  storage.setItem(SAVE_KEY, JSON.stringify(raw));
+  const game = createGame(storage);
+  assert.equal(game.combat().attackIndex, 2);
+  assert.equal(game.eventsSince().length, 0);
+  game.act('pause');
+  game.act('build', 'warcry');
+  assert.equal(game.combat().attackIndex, 2);
+  assert.equal(game.combat().phase, 'paused');
+  game.act('pause');
+  game.tick(game.stats().huntSeconds * 0.28);
+  assert.equal(game.combat().monster.hp, 0);
+  assert.equal(game.eventsSince().filter(e => e.type === 'hit').length, 1);
+});
+
+test('changing boss build flushes only old-build damage and offline damage is never replayed', () => {
+  const storage = memory();
+  const game = createGame(storage);
+  game.act('activity', 'boss');
+  const oldDps = game.stats().bossDps;
+  game.tick(0.4);
+  game.act('build', 'warcry');
+  const flushed = game.eventsSince().at(-1);
+  assert.equal(flushed.type, 'bossHit');
+  assert.equal(flushed.buildId, 'whirlwind');
+  assert.ok(Math.abs(flushed.damage - oldDps * 0.4) < 1e-8);
+  game.tick(0.2);
+  game.save();
+  const raw = JSON.parse(storage.getItem(SAVE_KEY));
+  raw.savedAt = Date.now() - 3600000;
+  storage.setItem(SAVE_KEY, JSON.stringify(raw));
+  const restored = createGame(storage);
+  assert.deepEqual(restored.eventsSince(), []);
+  const dps = restored.stats().bossDps;
+  const untilPulse = 1 - restored.state.bossPulseProgress;
+  restored.tick(untilPulse);
+  const pulse = restored.eventsSince().find(e => e.type === 'bossHit');
+  assert.ok(pulse);
+  assert.ok(Math.abs(pulse.damage - dps * untilPulse) < 1e-7, 'first new pulse must not contain offline accumulated damage');
 });
