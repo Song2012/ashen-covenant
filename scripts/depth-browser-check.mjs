@@ -1,0 +1,77 @@
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { createGame, SAVE_KEY } from '../src/engine.js';
+const out='artifacts/v07';
+await fs.mkdir(out,{recursive:true});
+const browser=await chromium.launch({headless:true});
+const errors=[],checks=[];
+const base=process.env.TEST_URL||'http://127.0.0.1:5189';
+const fresh=()=>{
+  const game=createGame(null);
+  Object.assign(game.state,{level:26,running:false,gold:20000,shards:100,savedAt:Date.now()});
+  for(const item of Object.values(game.state.equipment)){Object.assign(item,{element:'physical',bonus:18,rarity:'rare'});}
+  Object.assign(game.state.equipment.weapon,{power:72,affixes:['+18% 物理伤害','+72 力量']});
+  Object.assign(game.state.inventory.find(i=>i.id==='iron-maul'),{power:92,affixes:['+18% 物理伤害','+92 力量']});
+  return structuredClone(game.state);
+};
+async function fixture(state){
+  const context=await browser.newContext({viewport:{width:1440,height:1050}});
+  await context.addInitScript(({state,key})=>{if(!sessionStorage.getItem('depth-fixture')){localStorage.setItem(key,JSON.stringify(state));sessionStorage.setItem('depth-fixture','yes');}},{state,key:SAVE_KEY});
+  const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(base);await page.waitForSelector('[data-depth="0"]');
+  return {context,page,click:selector=>page.locator(selector).first().click(),read:()=>page.evaluate(key=>JSON.parse(localStorage.getItem(key)),SAVE_KEY)};
+}
+try{
+  const legacy=fresh();delete legacy.depth;
+  const first=await fixture(legacy),{page,click,read}=first;
+  assert.equal((await read()).depth,0,'old saves default to surface');
+  assert.equal(await page.locator('.depth-options button').count(),6);
+  assert.equal(await page.locator('[data-depth="3"]').isDisabled(),true);
+  await click('[data-zone="marsh"]');
+  if((await read()).running)await click('[data-act="pause"]');
+  const before=await read();
+  await click('[data-depth="2"]');
+  const deeper=await read();
+  assert.equal(deeper.depth,2);assert.equal(deeper.running,false);assert.equal(deeper.progress,0);
+  assert.equal(deeper.rng,before.rng);assert.equal(deeper.gold,before.gold);assert.equal(deeper.level,26);
+  const seconds=()=>page.locator('[data-depth-seconds]').textContent().then(text=>parseFloat(text));
+  const originalSeconds=await seconds();
+  assert.ok(originalSeconds>3.5&&originalSeconds<30);
+  assert.match(await page.locator('[data-depth-power]').textContent(),/\+6/);
+  await page.locator('.expedition-depth').screenshot({path:`${out}/depth-desktop.png`});
+  await click('nav [data-page="inventory"]');await click('[data-item="iron-maul"]');
+  const comparison=page.locator('[data-compare="huntSeconds"]');
+  assert.ok(parseFloat(await comparison.locator('b').textContent())<parseFloat(await comparison.locator('span').nth(1).textContent()));
+  await click('[data-equip="iron-maul"]');await click('nav [data-page="adventure"]');
+  assert.ok(await seconds()<originalSeconds,'upgraded weapon improves the selected deep encounter');
+  await click('[data-act="pause"]');await page.waitForTimeout(1500);await click('[data-act="pause"]');
+  assert.ok((await read()).progress>0,'real-time deep hunt progresses');
+  const pausedProgress=(await read()).progress;
+  await click('[data-depth="2"]');assert.equal((await read()).progress,pausedProgress,'reselecting the same layer does not restart a paused encounter');
+  await page.reload();assert.equal((await read()).depth,2);
+  await page.setViewportSize({width:390,height:844});
+  await page.locator('.expedition-depth').scrollIntoViewIfNeeded();
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('.expedition-depth').screenshot({path:`${out}/depth-mobile.png`});
+  checks.push('old surface default, level locks, pure depth quote, paused selection, meaningful weapon comparison, real progress, reselection and mobile persistence');
+  await click('nav [data-page="boss"]');await click('[data-activity="boss"]');
+  assert.equal((await read()).boss.maxHp,28000,'deep hunt does not scale the world boss');
+  assert.equal((await read()).depth,2,'the chosen hunt depth is remembered between activities');
+  await click('nav [data-page="adventure"]');await click('[data-act="pause"]');
+  await click('[data-depth="0"]');
+  assert.equal((await read()).activity,'hunt');assert.equal((await read()).running,false);
+  assert.ok(await seconds()<=originalSeconds);
+  checks.push('activity switching remembers hunt depth; selecting surface returns to hunt while keeping manual pause');
+  await first.context.close();
+  const pending=fresh();pending.pendingLoot={...structuredClone(pending.inventory[5]),id:'pending-depth',locked:false};pending.running=true;
+  const second=await fixture(pending);
+  assert.equal((await second.read()).running,false);
+  for(const depth of [0,1,2])assert.equal(await second.page.locator(`[data-depth="${depth}"]`).isDisabled(),true);
+  checks.push('pending legendary protection disables every depth change');
+  await second.context.close();
+  assert.deepEqual(errors,[]);
+  const report={passed:true,base,checks,errors,checkedAt:new Date().toISOString()};
+  await fs.writeFile(`${out}/depth-browser-results.json`,JSON.stringify(report,null,2));
+  console.log(report);
+}finally{await browser.close();}

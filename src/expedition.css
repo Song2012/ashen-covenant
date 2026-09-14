@@ -3,3 +3,6 @@
 @media(max-width:1100px){.currencies{gap:13px}.bestiary{grid-template-columns:1fr}.bestiary-card{display:grid;grid-template-columns:70px 1fr;column-gap:12px}.bestiary-card img{grid-row:1/4;width:70px;height:90px}.bestiary-card h3{margin:2px 0 5px}.bestiary-card p{margin-top:5px}}
 @media(max-width:600px){.encounter-hud{padding:11px}.encounter-name{font-size:15px}.encounter-tag{font-size:9px}.encounter-bottom{font-size:9px;gap:7px}.encounter-bottom span{max-width:70%}.journal-intro,.lore-chapter,.settings-panel{padding:20px}.journal-intro h2{font-size:23px}.setting-row{align-items:flex-start;gap:14px}.setting-row b{font-size:13px}.setting-row small{font-size:10px}.setting-controls{gap:6px}.setting-row input[type=range]{width:85px}.setting-toggle{min-width:76px;padding:9px}.scene-caption span:last-child{font-size:9px}}
 @media(max-width:640px){nav{justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}nav button{flex:0 0 66px}.sidebar{overflow:visible}.scene-caption{height:auto;min-height:34px}.scene-caption span:first-child{overflow-wrap:anywhere;min-width:0}.encounter-top{flex-wrap:wrap}.encounter-bottom b{white-space:nowrap}}
+
+/* Crop peripheral scenery on narrow screens so actors remain legible. */
+@media(max-width:640px){#scene{--scene-fit:cover;height:min(220px,calc((100vw - 36px)*.621277))}}

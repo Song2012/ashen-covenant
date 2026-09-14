@@ -1,6 +1,6 @@
 {
   "name": "ashen-covenant",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "balance": "node scripts/balance-report.mjs",
     "test:loot": "node scripts/loot-check.mjs",
     "test:forge": "node scripts/forge-check.mjs",
-    "test:progression": "node scripts/progression-check.mjs"
+    "test:progression": "node scripts/progression-check.mjs",
+    "test:depth": "node scripts/depth-check.mjs && node scripts/depth-browser-check.mjs"
   },
   "dependencies": {
     "lucide": "^0.468.0",

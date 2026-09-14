@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { drawMonster } from './monster-art.js';
+import { drawRegion, regionLights } from './region-art.js';
 
 // Individually authored pixel silhouettes, rendered as nearest-filtered sprites.
 const W = 720, H = 292;
@@ -10,48 +11,9 @@ function texture(draw, w=W, h=H) {
   const t=new THREE.CanvasTexture(canvas); t.magFilter=THREE.NearestFilter; t.minFilter=THREE.NearestFilter; t.colorSpace=THREE.SRGBColorSpace;
   return t;
 }
-function rng(seed=42) { return () => { seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }; }
 function rect(c,color,x,y,w,h) { c.fillStyle=color; c.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h)); }
 function poly(c,color,points) { c.fillStyle=color; c.beginPath(); points.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y)); c.closePath(); c.fill(); }
 function ellipse(c,color,x,y,rx,ry){ c.fillStyle=color; c.beginPath(); c.ellipse(x,y,rx,ry,0,0,Math.PI*2); c.fill(); }
-function cathedral(c,fish=false,zone='grave'){
-  const r=rng(94), furnace=zone==='furnace',crypt=zone==='crypt',marsh=zone==='marsh';
-  rect(c,'#141419',0,0,W,H);
-  // Individually chipped masonry with unequal rows and dark mortar.
-  for(let y=0;y<194;y+=16) for(let x=-48;x<W;x+=48){const xx=x+(y%32?24:0);rect(c,['#2d2d32','#303036','#28292f','#363337'][Math.floor(r()*4)],xx+1,y+1,46,14);rect(c,'#424045',xx+3,y+2,42,1);for(let n=0;n<7;n++)rect(c,'#202126',xx+r()*44,y+3+r()*11,2+r()*5,1);}
-  // The central pointed arch is cut stone, with deep layered archivolts.
-  const arch=(x,w,top,bottom,col)=>poly(c,col,[[x-w,bottom],[x-w,top+65],[x-w+10,top+43],[x-w+31,top+20],[x,top],[x+w-31,top+20],[x+w-10,top+43],[x+w,top+65],[x+w,bottom]]);
-  arch(364,132,-17,190,'#525054');arch(364,123,-8,190,'#212127');arch(364,114,1,190,'#47454a');arch(364,105,9,191,'#0e1118');
-  // Cut voussoirs, spalled edges and hairline fractures interrupt the arch bands.
-  for(const pts of [[[239,56],[253,60]],[[250,34],[263,41]],[[267,15],[278,26]],[[287,0],[297,11]],[[474,55],[488,51]],[[465,35],[477,27]],[[452,18],[462,8]]]){c.strokeStyle='#222129';c.lineWidth=2;c.beginPath();c.moveTo(...pts[0]);c.lineTo(...pts[1]);c.stroke();}
-  for(let i=0;i<35;i++){const x=i%2?237+r()*12:480+r()*12,y=70+r()*117;rect(c,'#3b3941',x,y,2+r()*5,1);rect(c,'#6d626b',x+1,y+2,2,1);}
-  for(let i=0;i<8;i++){let y=63+i*16;rect(c,'#717079',232,y,16,2);rect(c,'#67646a',480,y,16,2);}
-  arch(364,79,34,187,crypt?'#18212b':furnace?'#281719':'#1c1c25');arch(364,66,43,188,'#101017');
-  for(let x=311;x<426;x+=16){rect(c,'#34333c',x,87,3,89);poly(c,'#66606a',[[x-2,87],[x+1,79],[x+4,87]]);}rect(c,'#57515a',304,112,121,3);rect(c,'#403944',304,151,121,3);
-  // Armorial banners: oxblood fabric, split hems, tarnished bone emblems.
-  [166,552].forEach((x,j)=>{rect(c,'#756658',x-25,27,50,4);rect(c,'#161419',x-24,31,50,119);poly(c,'#55212c',[[x-21,31],[x+21,31],[x+21,139],[x+11,133],[x+1,150],[x-10,134],[x-21,141]]);rect(c,'#772c36',x-19,32,4,102);rect(c,'#351c26',x+12,32,7,104);rect(c,'#9c7b62',x-12,42,25,2);poly(c,'#b3a18a',[[x,59],[x-9,70],[x-8,82],[x-3,85],[x-3,93],[x+4,93],[x+4,85],[x+9,80],[x+9,70]]);rect(c,'#3a2029',x-6,73,4,5);rect(c,'#3a2029',x+3,73,4,5);rect(c,'#8a695c',x-12,99,25,2);});
-  // Tomb altar and votive candles at the threshold.
-  poly(c,'#69606a',[[301,178],[315,166],[413,166],[430,178]]);rect(c,'#38343d',301,179,129,10);rect(c,'#817477',315,163,98,4);rect(c,'#494149',324,147,80,16);rect(c,'#837377',320,144,88,5);rect(c,'#25232c',333,150,62,10);
-  poly(c,'#b4a38a',[[355,145],[355,125],[348,125],[348,120],[355,120],[355,109],[361,105],[367,109],[367,120],[374,120],[374,125],[367,125],[367,145]]);
-  for(const x of [309,315,326,399,409,417]){rect(c,'#c4b59b',x,132+(x%5),3,12);rect(c,'#ffcf86',x,130+(x%5),2,3);ellipse(c,'#db8b391a',x,132,13,17);}
-  poly(c,'#3a383f',[[0,187],[720,187],[720,292],[0,292]]);
-  const rows=[187,199,215,237,264,292];rows.forEach((y,i)=>{rect(c,'#1c1d24',0,y,720,2);const ww=48+i*20;for(let x=-ww;x<720;x+=ww){const xx=x+(i%2?ww/2:0);rect(c,'#1b1e24',xx,y,2,(rows[i+1]||292)-y);rect(c,'#535057',xx+3,y+3,ww-6,1);}});
-  for(let n=0;n<220;n++){const x=r()*W,y=188+r()*105;rect(c,['#24242b','#57505a','#46434a'][n%3],x,y,2+r()*9,1);}
-  // Flattened ritual seal is integrated in the floor, not a floating UI ring.
-  c.strokeStyle='#713b44';c.lineWidth=2;c.beginPath();c.ellipse(372,237,87,24,0,0,Math.PI*2);c.stroke();c.beginPath();c.ellipse(372,237,76,20,0,0,Math.PI*2);c.stroke();c.beginPath();for(let i=0;i<6;i++){const a=-Math.PI/2+i*Math.PI*4/5;const x=372+Math.cos(a)*68,y=237+Math.sin(a)*18;i?c.lineTo(x,y):c.moveTo(x,y);}c.stroke();
-  for(let n=0;n<11;n++){const x=220+r()*300,y=220+r()*46;poly(c,'#542a36',[[x,y],[x+11,y-2],[x+21,y+1],[x+9,y+4],[x-3,y+2]]);}
-  // Foreground pillars have broken capitals and skeletal reliefs.
-  [71,645].forEach((x,j)=>{rect(c,'#1c1b23',x-23,0,45,218);rect(c,'#3e3a43',x-18,0,35,207);rect(c,'#615762',x-16,0,6,205);rect(c,'#2b2832',x+9,0,8,205);for(let y=16;y<201;y+=23)rect(c,'#201e26',x-18,y,37,2);rect(c,'#73656a',x-26,28,53,7);rect(c,'#4f454e',x-22,35,45,10);rect(c,'#74656a',x-26,202,53,7);rect(c,'#403741',x-30,209,61,10);for(let n=0;n<8;n++)rect(c,'#28252e',x-9+(n%3)*5,47+n*18,2,7);});
-  [[124,226],[583,229]].forEach(([x,y])=>{poly(c,'#686069',[[x-25,y-5],[x-10,y-18],[x+27,y-14],[x+41,y],[x+26,y+12],[x-14,y+10]]);poly(c,'#36323d',[[x-25,y-5],[x-14,y+10],[x+26,y+12],[x+26,y+22],[x-15,y+18],[x-25,y+4]]);rect(c,'#a5938a',x-1,y-13,4,13);rect(c,'#a5938a',x-6,y-9,14,3);});
-  [205,506].forEach(x=>{rect(c,'#22202a',x-3,134,7,47);rect(c,'#807071',x-8,140,17,4);poly(c,'#52424b',[[x-10,132],[x+11,132],[x+6,142],[x-5,142]]);rect(c,'#a48b75',x-10,131,21,2);});
-  // Bone piles, broken slabs and iron fence silhouettes.
-  for(let n=0;n<25;n++){const x=r()*W,y=258+r()*24;poly(c,'#595059',[[x,y],[x+6,y-3],[x+14,y],[x+11,y+5],[x,y+3]]);if(n%3===0){rect(c,'#ab9b88',x,y-3,5,4);rect(c,'#332b34',x+1,y-2,1,2);rect(c,'#a29381',x-4,y+4,14,2);}}
-  for(let x=0;x<720;x+=22){if(x>150&&x<574)continue;rect(c,'#12121a',x,255,3,37);poly(c,'#22212a',[[x-3,257],[x+1,246],[x+5,257]]);}rect(c,'#17141d',0,283,720,9);
-  if(zone==='grave'&&!fish){ellipse(c,'#869096',363,58,26,26);ellipse(c,'#252530',376,50,23,26);for(let x=335;x<394;x+=14)rect(c,'#383742',x,27,2,64);rect(c,'#56505b',334,61,60,3);}
-  if(crypt){for(let n=0;n<25;n++)poly(c,'#77949e',[[238+n*10,67],[240+n*10,76+n%4*4],[243+n*10,67]]);for(const x of [106,590]){poly(c,'#405866',[[x,215],[x-12,180],[x-4,166],[x+4,185],[x+11,153],[x+18,166],[x+14,191],[x+28,180],[x+33,193],[x+22,218]]);poly(c,'#94b8c7',[[x+4,206],[x+10,161],[x+13,170],[x+10,212]]);poly(c,'#6c8c9c',[[x+17,211],[x+28,185],[x+26,201],[x+21,215]]);}}
-  if(furnace){poly(c,'#5c2d2a',[[311,161],[313,97],[327,65],[347,49],[378,49],[401,66],[417,100],[419,164]]);for(let i=0;i<13;i++){const x=320+i*7;poly(c,i%2?'#a85535':'#d87b43',[[x,162],[x,116+i%3*8],[x+5,96+i%4*7],[x+11,129],[x+15,162]]);}for(let x=317;x<420;x+=17)rect(c,'#2d252b',x,87,4,83);rect(c,'#514047',311,118,111,5);rect(c,'#514047',311,151,111,5);poly(c,'#733128',[[45,271],[181,270],[216,277],[200,281],[44,277]]);}
-  if(fish||marsh){poly(c,'#192b35',[[313,205],[409,191],[588,194],[720,209],[720,278],[454,268],[333,241]]);for(let n=0;n<95;n++){const x=350+r()*366,y=207+r()*54;rect(c,n%3?'#31424b':'#536069',x,y,3+r()*17,1);}poly(c,'#63524c',[[258,216],[334,214],[356,231],[273,235]]);for(let n=0;n<8;n++)rect(c,'#29252d',271+n*10,218,2,13);}
-}
 function hero(c,kind){
   if(kind==='barbarian'){
     // Broad unhelmeted silhouette: bare muscular arms, fur, leather and twin axes.
@@ -120,16 +82,18 @@ function heroPose(c,kind,pose){
 export function createScene(container,getState,getCombat=()=>null,getEvents=()=>[],getSettings=()=>({})){
   let renderer;
   try {renderer=new THREE.WebGLRenderer({alpha:false,antialias:false,powerPreference:'low-power'});}catch(error){
-    const fallback=document.createElement('canvas');fallback.width=W;fallback.height=H;fallback.style.cssText='width:100%;height:100%;object-fit:contain;background:#141419;image-rendering:pixelated';cathedral(fallback.getContext('2d'));container.append(fallback);
+    const fallback=document.createElement('canvas');fallback.width=W;fallback.height=H;fallback.style.cssText='width:100%;height:100%;object-fit:var(--scene-fit,contain);background:#141419;image-rendering:pixelated';drawRegion(fallback.getContext('2d'),{zoneId:getState()?.zoneId,activity:getState()?.activity});container.append(fallback);
     return {dispose(){fallback.remove();},diagnostics(){return {fallback:true,calls:0,triangles:0,textures:0,eventCursor:0};}};
   }
   renderer.setPixelRatio(1);renderer.setSize(W,H,false);renderer.outputColorSpace=THREE.SRGBColorSpace;
-  renderer.domElement.style.cssText='display:block;width:100%;height:100%;object-fit:contain;background:#141419;image-rendering:pixelated';renderer.domElement.setAttribute('aria-label','像素战场：动作、命中与战利品跟随实际战斗结算');container.append(renderer.domElement);
+  renderer.domElement.style.cssText='display:block;width:100%;height:100%;object-fit:var(--scene-fit,contain);background:#141419;image-rendering:pixelated';renderer.domElement.setAttribute('aria-label','像素战场：动作、命中与战利品跟随实际战斗结算');container.append(renderer.domElement);
   const scene=new THREE.Scene();scene.background=new THREE.Color('#141419');const camera=new THREE.OrthographicCamera(0,W,0,H,0.1,100);camera.position.z=10;
   const textures=new Set(),materials=[],geometries=[];
   function plane(t,w,h,x,y,z=0){textures.add(t);const mat=new THREE.MeshBasicMaterial({map:t,transparent:true,depthTest:false,side:THREE.DoubleSide,forceSinglePass:true});materials.push(mat);const geo=new THREE.PlaneGeometry(w,h);geometries.push(geo);const mesh=new THREE.Mesh(geo,mat);mesh.position.set(x,y,z);mesh.rotation.x=Math.PI;mesh.renderOrder=z;scene.add(mesh);return mesh;}
-  const bg=plane(texture(c=>cathedral(c)),W,H,W/2,H/2,0);
-  const lakeTex=texture(c=>cathedral(c,true));textures.add(lakeTex);const regions={grave:bg.material.map};for(const zone of ['crypt','furnace','marsh']){regions[zone]=texture(c=>cathedral(c,false,zone));textures.add(regions[zone]);}
+  const bg=plane(texture(c=>drawRegion(c)),W,H,W/2,H/2,0);
+  const lakeTex=texture(c=>drawRegion(c,{activity:'fish'}));textures.add(lakeTex);const regions={grave:bg.material.map};for(const zone of ['crypt','furnace','marsh']){regions[zone]=texture(c=>drawRegion(c,{zoneId:zone}));textures.add(regions[zone]);}
+  const throneTex=texture(c=>drawRegion(c,{activity:'boss'}));textures.add(throneTex);
+  let environment='grave',torchPoints=regionLights();
   const heroFrames={};for(const kind of Object.keys(palettes)){heroFrames[kind]=[0,1,2].map(p=>{const t=texture(c=>heroPose(c,kind,p),80,80);textures.add(t);return t;});}
   const player=plane(heroFrames.barbarian[0],96,96,280,199,3);
   const monsterCache=new Map();
@@ -224,9 +188,12 @@ export function createScene(container,getState,getCombat=()=>null,getEvents=()=>
     playerX=fish?284:280+(contact-280)*advance;
     const pose=fish||dead?0:impact?2:charge>.78?2:charge>.35?1:0;
     player.material.map=heroFrames[kind][pose];lastPose=pose;
+    player.renderOrder=boss?4:3; // Keep the melee hero readable in front of the large boss.
     player.position.set(playerX,199+(reduce?0:phase==='approach'?Math.sin(time*14)*2:0),3);
     player.rotation.z=reduce?0:impact&&kind==='barbarian'?-.045:pose===1?.025:0;
-    bg.material.map=fish?lakeTex:(regions[s.zoneId]||regions.grave);
+    const nextEnvironment=fish?'fish':boss?'boss':s.zoneId||'grave';
+    if(environment!==nextEnvironment){environment=nextEnvironment;torchPoints=regionLights({zoneId:s.zoneId,activity});}
+    bg.material.map=fish?lakeTex:boss?throneTex:(regions[s.zoneId]||regions.grave);
     enemy.visible=!!lastMonster&&!fish&&decay<1;
     if(enemy.visible){
       useMonster(lastMonster,boss);const size=boss?1.78:lastMonster.family==='brute'?1.18:1;
@@ -237,7 +204,7 @@ export function createScene(container,getState,getCombat=()=>null,getEvents=()=>
       const flash=reduce?0:impact*1.4;enemy.material.color.setRGB(1+flash,1+flash,1+flash);
     }
     fx.clearRect(0,0,W,H);
-    [205,506].forEach((x,n)=>{if(!reduce)ellipse(fx,'#a8763320',x,128,24,29);poly(fx,'#a6572e',[[x-7,135],[x-7,124],[x-2,113+(reduce?0:Math.sin(time*7+n)*3)],[x+1,123],[x+5,115],[x+7,130],[x+4,136]]);poly(fx,'#e4a14f',[[x-4,134],[x-3,121],[x+1,125],[x+3,120],[x+4,134]]);rect(fx,'#ffe0a0',x-2,127,4,7);});
+    torchPoints.forEach(({x,y},n)=>{fx.save();fx.translate(0,y-128);if(!reduce)ellipse(fx,'#a8763320',x,128,24,29);poly(fx,'#a6572e',[[x-7,135],[x-7,124],[x-2,113+(reduce?0:Math.sin(time*7+n)*3)],[x+1,123],[x+5,115],[x+7,130],[x+4,136]]);poly(fx,'#e4a14f',[[x-4,134],[x-3,121],[x+1,125],[x+3,120],[x+4,134]]);rect(fx,'#ffe0a0',x-2,127,4,7);fx.restore();});
     if(!reduce)for(let n=0;n<18;n++){const x=(n*79+Math.sin(time*.3+n)*12)%W,y=(n*31-time*(3+n%3)+1000)%H;rect(fx,'#d7b46650',x,y,1,1);}
     ellipse(fx,'#090b1166',playerX,239,25,5);if(enemy.visible)ellipse(fx,'#090b1166',enemyX,240,boss?43:25,5);
     if(fish){
@@ -259,7 +226,7 @@ export function createScene(container,getState,getCombat=()=>null,getEvents=()=>
   }
   frame=requestAnimationFrame(animate);
   return {
-    diagnostics(){return {calls:renderer.info.render.calls,triangles:renderer.info.render.triangles,textures:renderer.info.memory.textures,geometries:renderer.info.memory.geometries,pixelRatio:1,resolution:`${W}×${H}`,eventCursor:lastEvent,observedHits,observedLoot,encounterId:lastEncounter,phase,monsterFamily:lastMonster?.family||null,playerX:Math.round(playerX),enemyX:Math.round(enemyX),pose:lastPose,reducedMotion:reduce,cachedMonsters:monsterCache.size};},
+    diagnostics(){return {calls:renderer.info.render.calls,triangles:renderer.info.render.triangles,textures:renderer.info.memory.textures,geometries:renderer.info.memory.geometries,pixelRatio:1,resolution:`${W}×${H}`,eventCursor:lastEvent,observedHits,observedLoot,encounterId:lastEncounter,phase,environment,monsterFamily:lastMonster?.family||null,playerX:Math.round(playerX),enemyX:Math.round(enemyX),pose:lastPose,reducedMotion:reduce,cachedMonsters:monsterCache.size};},
     dispose(){disposed=true;cancelAnimationFrame(frame);resize.disconnect();textures.forEach(t=>t.dispose());materials.forEach(m=>m.dispose());geometries.forEach(g=>g.dispose());renderer.dispose();renderer.domElement.remove();}
   };
 }

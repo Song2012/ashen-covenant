@@ -996,3 +996,98 @@ test('one-time migration notice survives long offline log churn but never replay
   storage.setItem(SAVE_KEY,JSON.stringify({version:1,balanceMigrationNotice:'bad',inventory:[{invalid:true}]}));
   assert.equal(createGame(storage).state.balanceMigrationNotice,'');
 });
+
+test('depth zero keeps the original hunt formula and old saves default to zero', () => {
+  const game=createGame(memory());
+  assert.equal(game.state.depth,0);
+  const s=game.stats(), recovery=(1.12-Math.min(.2,s.defense/800))*(1-s.damageReduction*.5);
+  assert.equal(s.huntSeconds,Math.max(3.5,Math.min(14,8*108/Math.max(35,s.effectiveDps*(1+s.areaBonus))*recovery)));
+  assert.equal(s.huntBaseXp,18);assert.equal(s.huntBaseGold,17);assert.equal(s.lootPowerBonus,0);
+  for(const value of [undefined,-1,1.5,99,'2',NaN,5]){
+    const raw=JSON.parse(JSON.stringify(game.state));raw.depth=value;raw.savedAt=Date.now();
+    const storage=memory();storage.setItem(SAVE_KEY,JSON.stringify(raw));
+    assert.equal(createGame(storage).state.depth,0);
+  }
+  game.state.level=26;game.act('depth','2');game.save();
+  const storage=memory();storage.setItem(SAVE_KEY,JSON.stringify(game.state));
+  assert.equal(createGame(storage).state.depth,2);
+});
+
+test('expedition quotes are pure and validate both depth and zone unlocks', () => {
+  const storage=memory(),game=createGame(storage);const before=JSON.stringify(game.state),saved=storage.getItem(SAVE_KEY);
+  for(const depth of [-1,1.5,6,'1',null,NaN])assert.equal(game.expeditionQuote(depth).unlocked,false);
+  assert.equal(game.expeditionQuote(1).unlocked,false);assert.equal(game.expeditionQuote(0,'marsh').unlocked,false);
+  assert.equal(game.expeditionQuote(0,'missing').unlocked,false);
+  game.expeditionQuote(0).huntSeconds=-1;
+  assert.equal(JSON.stringify(game.state),before);assert.equal(storage.getItem(SAVE_KEY),saved);
+  game.state.level=26;const q=game.expeditionQuote(2,'marsh');assert.equal(q.unlocked,true);
+  game.act('zone','marsh');game.act('depth','2');
+  assert.equal(q.huntSeconds,game.stats().huntSeconds);assert.equal(q.huntXpPerHour,game.stats().huntXpPerHour);
+});
+
+test('depth switching clears partial rounds and preserves manual pause; pending loot blocks it', () => {
+  const game=createGame(memory());game.state.level=50;game.tick(game.stats().huntSeconds*.9);
+  const kills=game.state.kills,id=game.combat().id;game.act('pause');game.act('depth','2');
+  assert.equal(game.state.progress,0);assert.notEqual(game.combat().id,id);assert.equal(game.state.running,false);assert.equal(game.state.pauseReason,'manual');
+  game.tick(100);assert.equal(game.state.kills,kills);
+  game.act('pause');game.tick(game.stats().huntSeconds*.2);assert.equal(game.state.kills,kills);
+  const sameRound=game.combat().id,sameProgress=game.state.progress;
+  assert.match(game.act('depth','2'), /已在/);assert.equal(game.combat().id,sameRound);assert.equal(game.state.progress,sameProgress);
+  const validDepth=game.state.depth;
+  for(const value of ['','02','2.0','5foo','-1',6,NaN,null]){game.act('depth',value);assert.equal(game.state.depth,validDepth);}
+  game.act('zone','crypt');assert.equal(game.state.depth,2);
+  game.act('activity','fish');game.act('pause');game.act('depth','1');assert.equal(game.state.activity,'hunt');assert.equal(game.state.running,false);
+  game.state.pendingLoot=testItem(game,'pending-depth',{rarity:'legendary'});const serial=game.state.encounterSerial;
+  game.act('depth','3');assert.equal(game.state.depth,1);assert.equal(game.state.encounterSerial,serial);assert.equal(game.state.pauseReason,'lootProtection');
+  const low=createGame(memory());low.act('depth','1');assert.equal(low.state.depth,0);
+});
+
+test('deep hunt scales authoritative HP and rewards while preserving drop rolls and rarity', () => {
+  const shallow=createGame(memory()),deep=createGame(memory());
+  for(const g of [shallow,deep]){g.state.level=50;g.state.rng=1;g.act('zone','marsh');}
+  deep.act('depth','5');
+  assert.equal(deep.combat().monster.maxHp,shallow.combat().monster.maxHp*27);
+  const gold=deep.state.gold;const xp=deep.state.xp;const hp=deep.combat().monster.maxHp;
+  for(const g of [shallow,deep])g.tick(g.stats().huntSeconds);
+  const hits=deep.eventsSince().filter(e=>e.type==='hit');assert.equal(hits.length,3);
+  assert.equal(hits.reduce((sum,e)=>sum+e.damage,0),hp);assert.ok(hits.every(e=>e.maxHp===hp));
+  assert.equal(deep.state.gold-gold,45*3.5);assert.equal(deep.state.xp-xp,39*3.5);
+  const event=deep.eventsSince().find(e=>e.type==='loot');assert.equal(event.gold,45*3.5);assert.equal(event.xp,39*3.5);
+  assert.equal(deep.state.rng,shallow.state.rng);
+  const low=shallow.state.inventory.filter(i=>i.id.startsWith('drop-')),high=deep.state.inventory.filter(i=>i.id.startsWith('drop-'));
+  assert.equal(low.length,high.length);assert.ok(high.length>0);
+  for(let i=0;i<low.length;i++){assert.equal(low[i].rarity,high[i].rarity);assert.equal(low[i].bonus,high[i].bonus);assert.equal(low[i].element,high[i].element);assert.ok(Math.abs(high[i].power-low[i].power-15*({magic:1,rare:1.5,legendary:2.2}[low[i].rarity]))<=1);}
+});
+
+test('boss and fishing rewards, RNG and drops do not inherit hunt depth', () => {
+  for(const activity of ['boss','fish']){
+    const a=createGame(memory()),b=createGame(memory());
+    for(const g of [a,b]){g.state.level=50;g.act('zone','marsh');}
+    b.act('depth','5');
+    for(const g of [a,b]){g.act('activity',activity);assert.equal(g.stats().lootPowerBonus,0);g.tick(400);}
+    for(const key of ['gold','xp','rng','fish','boss','inventory','vault'])assert.deepEqual(a.state[key],b.state[key]);
+  }
+});
+
+test('deep online ticks and offline restoration settle the same rewards without replay', () => {
+  const storage=memory(),seed=createGame(storage);seed.state.level=50;seed.act('zone','marsh');seed.act('depth','5');seed.save();
+  const raw=JSON.parse(storage.getItem(SAVE_KEY));
+  const a=createGame(storage);for(let i=0;i<600;i++)a.tick(1);
+  const clock=Date.now;const now=clock();try{
+    Date.now=()=>now;raw.savedAt=now-600000;const offlineStorage=memory();offlineStorage.setItem(SAVE_KEY,JSON.stringify(raw));
+    const b=createGame(offlineStorage);
+    for(const key of ['kills','gold','xp','rng','inventory','vault','depth'])assert.deepEqual(a.state[key],b.state[key]);
+    assert.ok(Math.abs(a.state.progress-b.state.progress)<1e-8);assert.deepEqual(b.eventsSince(),[]);
+  }finally{Date.now=clock;}
+});
+
+test('stronger matching weapon and affinity improve high-depth actual clear efficiency', () => {
+  const game=createGame(memory());game.state.level=50;game.act('zone','marsh');game.act('depth','5');
+  for(const i of Object.values(game.state.equipment))Object.assign(i,{power:97,bonus:18,element:'physical',rarity:'rare'});
+  for(const id of ['whirlwind','weaponMastery','bash'])for(let n=0;n<10;n++)game.act('train',id);
+  const base=game.stats();assert.ok(base.huntSeconds>3.5&&base.huntSeconds<30);
+  for(const [field,amount]of [['bonus',3],['power',20]]){
+    const after=game.stats({...game.state.equipment,weapon:{...game.state.equipment.weapon,[field]:game.state.equipment.weapon[field]+amount}});
+    assert.ok(after.huntSeconds<base.huntSeconds);assert.ok(after.huntXpPerHour>base.huntXpPerHour);
+  }
+});

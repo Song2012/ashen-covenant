@@ -40,6 +40,7 @@ export const ZONES = [
 ];
 
 export const SAVE_KEY = 'ashen-covenant-save-v1';
+export const DEPTHS = Object.freeze([1, 2.6, 6.76, 12, 18, 27].map((budget, id) => Object.freeze({ id, name: id === 0 ? '表层' : `深层 ${id}`, level: [1, 10, 20, 30, 40, 50][id], budget, rewardMultiplier: 1 + 0.5 * id, powerBonus: 3 * id })));
 export const BALANCE = Object.freeze({ version: 1, xpQuadratic: 24, bossLegendaryChance: 0.08, bossXp: 180, normalLegendaryBase: 0.006, magicFindDivisor: 6000, normalLegendaryCap: 0.015 });
 const levelExperience = level => 80 + level * 35 + BALANCE.xpQuadratic * level ** 2;
 export const INVENTORY_CAPACITY = 60;
@@ -62,7 +63,7 @@ const initialItems = () => [
 
 function freshState() {
   const inventory = initialItems();
-  return { version: 1, balanceVersion: BALANCE.version, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, pauseReason: null, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, vault: [], pendingLoot: null, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
+  return { version: 1, balanceVersion: BALANCE.version, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', depth: 0, zoneId: 'grave', running: true, pauseReason: null, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, vault: [], pendingLoot: null, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
     { id: 'market-1', owner: 'market', price: 720, item: { ...inventory[5], id: 'market-ghost', name: '暮钟指环' } },
     { id: 'market-2', owner: 'market', price: 350, item: { ...inventory[3], id: 'market-frost', name: '冬眠枝杖' } },
     { id: 'market-3', owner: 'market', price: 420, item: { ...inventory[6], id: 'market-storm', name: '碎星长衣' } },
@@ -99,6 +100,7 @@ function restore(raw) {
     s.combatStackProgress = Number.isFinite(raw.combatStackProgress) ? Math.max(0, Math.min(3.999999, raw.combatStackProgress)) : 0;
   }
   s.zoneId = ZONES.some(z => z.id === raw.zoneId && z.level <= s.level) ? raw.zoneId : 'grave';
+  s.depth = Number.isInteger(raw.depth) && DEPTHS.some(d => d.id === raw.depth && d.level <= s.level) ? raw.depth : 0;
   s.activity = ['hunt', 'fish', 'boss'].includes(raw.activity) ? raw.activity : 'hunt';
   s.running = typeof raw.running === 'boolean' ? raw.running : true;
   s.progress = Number.isFinite(raw.progress) ? Math.max(0, Math.min(0.999999, raw.progress)) : 0;
@@ -180,11 +182,16 @@ export function createGame(storage) {
     // Callers receive detached snapshots and cannot mutate authoritative state.
     return events.filter(event => event.id > id).map(event => ({ ...event, ...(event.item ? { item: { ...event.item, affixes: [...event.item.affixes] } } : {}) }));
   }
+  function huntMonster() {
+    const monster = getMonster(state.zoneId, state.kills);
+    monster.maxHp = Math.round(monster.maxHp * DEPTHS[state.depth].budget);
+    return monster;
+  }
   function combat() {
     const id = encounterId();
     const progress = state.activity === 'boss' ? 1 - state.boss.hp / state.boss.maxHp : state.progress;
     const attackIndex = state.activity === 'hunt' ? hitCount(progress) : state.activity === 'boss' ? state.bossAttackIndex : 0;
-    const monster = state.activity === 'hunt' ? getMonster(state.zoneId, state.kills) : state.activity === 'boss' ? { id: 'boss-morlgas', name: '骸冠君王·莫尔迦斯', family: 'brute', lore: '无名者将熄灭的王冠戴回了头上。', trait: '世界首领 · 同伴为本地模拟', color: '#c19170', maxHp: state.boss.maxHp, elite: true } : null;
+    const monster = state.activity === 'hunt' ? huntMonster() : state.activity === 'boss' ? { id: 'boss-morlgas', name: '骸冠君王·莫尔迦斯', family: 'brute', lore: '无名者将熄灭的王冠戴回了头上。', trait: '世界首领 · 同伴为本地模拟', color: '#c19170', maxHp: state.boss.maxHp, elite: true } : null;
     if (monster) monster.hp = state.activity === 'boss' ? state.boss.hp : monsterHp(monster.maxHp, attackIndex);
     let phase = state.activity === 'fish' ? 'fishing' : state.activity === 'boss' ? 'attack' : progress < 0.15 ? 'approach' : progress < 0.8 - 1e-10 ? 'attack' : progress < 0.9 ? 'defeat' : 'loot';
     if (!state.running) phase = 'paused';
@@ -203,7 +210,7 @@ export function createGame(storage) {
     }
     state.bossPulseProgress = 0; state.bossPulseDamage = 0; state.bossPulseAllyDamage = 0;
   }
-  function stats(equipment = state.equipment) {
+  function stats(equipment = state.equipment, expedition = {}) {
     const profession = CLASSES.find(c => c.id === state.classId);
     const build = profession.builds.find(b => b.id === state.buildId);
     const talents = state.talents[state.classId];
@@ -224,14 +231,26 @@ export function createGame(storage) {
     if (build.id === 'chainlightning') { damageBonus = rank('chargedBolt') * 0.04 + rank('chainLightning') * 0.08 + rank('lightningMastery') * 0.06; areaBonus = 0.5 + rank('chainLightning') * 0.03; }
     damageReduction = Math.min(0.6, damageReduction);
     const dps = Math.round((18 + state.level * 4 + (equipment.weapon?.power || 0) * 2 + (equipment.ring?.power || 0) + armorDamage) * (1 + affinity / 100) * (1 + damageBonus) * attackSpeed);
-    const zone = ZONES.find(z => z.id === state.zoneId);
+    const zone = ZONES.find(z => z.id === (expedition.zoneId ?? state.zoneId));
+    const depth = DEPTHS[expedition.depth ?? state.depth];
+    if (!zone || !depth) throw new RangeError('Invalid expedition');
     const zoneResistance = zone.element === build.element ? Math.max(0, 0.3 - resistancePenetration) : 0;
     const effectiveDps = Math.round(dps * (1 - zoneResistance));
     const bossDps = Math.round(dps * (1 + bossBonus));
     // Defense and reduction lower recovery time; no manual healing or death spiral.
     const recovery = (1.12 - Math.min(0.2, defense / 800)) * (1 - damageReduction * 0.5);
-    const huntSeconds = Math.max(3.5, Math.min(14, zone.seconds * (100 + zone.level * 8) / Math.max(35, effectiveDps * (1 + areaBonus)) * recovery));
-    return { dps, defense, magicFind: 15 + items.filter(i => i.rarity === 'legendary').length * 20 + Math.floor(state.level / 2) + magicFindBonus, xpNext: levelExperience(state.level), element: build.element, effectiveDps, zoneResistance, huntSeconds, attackSpeed, areaBonus, bossDps, damageReduction, trainingSpent, skillPoints: Math.max(0, state.level + 2 - trainingSpent), buildEffect: build.id === 'frenzy' ? `狂乱 ${state.combatStacks}/5 层 · 攻速 +${Math.round((attackSpeed - 1) * 100)}%` : build.mechanic };
+    const huntSeconds = Math.max(3.5, Math.min(depth.id === 0 ? 14 : 30, zone.seconds * (100 + zone.level * 8) / Math.max(35, effectiveDps * (1 + areaBonus)) * recovery * depth.budget));
+    const huntBaseXp = (15 + zone.level * 3) * depth.rewardMultiplier;
+    const huntBaseGold = (13 + zone.level * 4) * depth.rewardMultiplier;
+    return { depth: depth.id, lootPowerBonus: state.activity === 'hunt' ? depth.powerBonus : 0, huntBaseXp, huntBaseGold, huntXpPerHour: huntBaseXp * 3600 / huntSeconds, huntGoldPerHour: huntBaseGold * 3600 / huntSeconds, dps, defense, magicFind: 15 + items.filter(i => i.rarity === 'legendary').length * 20 + Math.floor(state.level / 2) + magicFindBonus, xpNext: levelExperience(state.level), element: build.element, effectiveDps, zoneResistance, huntSeconds, attackSpeed, areaBonus, bossDps, damageReduction, trainingSpent, skillPoints: Math.max(0, state.level + 2 - trainingSpent), buildEffect: build.id === 'frenzy' ? `狂乱 ${state.combatStacks}/5 层 · 攻速 +${Math.round((attackSpeed - 1) * 100)}%` : build.mechanic };
+  }
+  function expeditionQuote(depth, zoneId = state.zoneId) {
+    const entry = Number.isInteger(depth) ? DEPTHS.find(d => d.id === depth) : null;
+    const zone = ZONES.find(z => z.id === zoneId);
+    const reason = !entry ? '深度不存在。' : !zone ? '区域不存在。' : entry.level > state.level ? `需要达到 ${entry.level} 级才能进入。` : zone.level > state.level ? `需要达到 ${zone.level} 级才能进入。` : '';
+    if (!entry || !zone) return { depth, zoneId, unlocked: false, reason, huntSeconds: null, huntXpPerHour: null, huntGoldPerHour: null, powerBonus: null, budget: null, rewardMultiplier: null };
+    const preview = stats(state.equipment, { depth, zoneId });
+    return { depth, zoneId, unlocked: reason === '', reason, huntSeconds: preview.huntSeconds, huntXpPerHour: preview.huntXpPerHour, huntGoldPerHour: preview.huntGoldPerHour, powerBonus: entry.powerBonus, budget: entry.budget, rewardMultiplier: entry.rewardMultiplier };
   }
   function compareItem(id) {
     const item = findOwned(id)?.item || state.listings.find(l => l.item.id === id)?.item;
@@ -268,7 +287,7 @@ export function createGame(storage) {
     const legendaryChance = Math.min(BALANCE.normalLegendaryCap, BALANCE.normalLegendaryBase + stats().magicFind / BALANCE.magicFindDivisor);
     const rarity = (bossReward ? state.boss.kills === 1 || roll < BALANCE.bossLegendaryChance : roll < legendaryChance) ? 'legendary' : bossReward || roll < 0.42 ? 'rare' : 'magic';
     const tier = { magic: 1, rare: 1.5, legendary: 2.2 }[rarity];
-    const power = Math.round((9 + zone.level * 2 + state.level * 0.7 + random() * 9) * tier);
+    const power = Math.round((9 + zone.level * 2 + state.level * 0.7 + (state.activity === 'hunt' && !bossReward ? DEPTHS[state.depth].powerBonus : 0) + random() * 9) * tier);
     const bonus = Math.round((7 + random() * 12) * tier);
     const prefix = { fire: '余烬', frost: '霜痕', lightning: '裂星', physical: '铁誓', poison: '疫月', shadow: '暮魂', magic: '回响' }[element];
     const name = `${prefix}${{ weapon: '仪式刃', armor: '守夜衣', ring: '契印' }[slot]}${rarity === 'legendary' ? ' · 永寂' : ''}`;
@@ -316,7 +335,7 @@ export function createGame(storage) {
         }
       } else {
         const id = encounterId();
-        const monster = state.activity === 'hunt' ? getMonster(state.zoneId, state.kills) : null;
+        const monster = state.activity === 'hunt' ? huntMonster() : null;
         const duration = state.activity === 'fish' ? 8 : current.huntSeconds;
         const previousProgress = state.progress;
         const previousTime = state.simTime;
@@ -346,10 +365,10 @@ export function createGame(storage) {
           else {
             const zone = ZONES.find(z => z.id === state.zoneId);
             if (state.buildId === 'frenzy') state.combatStacks = Math.min(5, state.combatStacks + 1);
-            state.kills++; state.gold += 13 + zone.level * 4; experience(15 + zone.level * 3);
+            state.kills++; state.gold += current.huntBaseGold; experience(current.huntBaseXp);
             let drop = {};
             if (random() < 0.7) drop = loot(); else log(`击败 ${zone.name} 的游魂，获得金币与经验。`);
-            rewardEvent({ encounterId: id, monsterId: monster.id, target: monster.name, gold: 13 + zone.level * 4 + (drop.autoSold ? drop.item.value : 0), xp: 15 + zone.level * 3, ...drop });
+            rewardEvent({ encounterId: id, monsterId: monster.id, target: monster.name, gold: current.huntBaseGold + (drop.autoSold ? drop.item.value : 0), xp: current.huntBaseXp, ...drop });
           }
         }
       }
@@ -372,7 +391,7 @@ export function createGame(storage) {
   function act(type, payload) {
     const id = typeof payload === 'object' && payload !== null ? payload.id : payload;
     let message;
-    if (state.pendingLoot && ['pause', 'activity', 'zone'].includes(type)) { state.running = false; state.pauseReason = 'lootProtection'; return protectionMessage(); }
+    if (state.pendingLoot && ['pause', 'activity', 'zone', 'depth'].includes(type)) { state.running = false; state.pauseReason = 'lootProtection'; return protectionMessage(); }
     if (type === 'class') {
       const cls = CLASSES.find(c => c.id === id); if (!cls) return '职业不存在。';
       if (state.classId !== id) { if (state.activity === 'boss') flushBossHit(); state.classId = id; state.buildId = cls.builds[0].id; state.combatStacks = 0; state.combatStackProgress = 0; }
@@ -393,6 +412,18 @@ export function createGame(storage) {
     } else if (type === 'resetTalents') {
       state.talents[state.classId] = {};
       message = `当前职业技能已免费重置，${state.level + 2} 点技能点可重新分配。`;
+    } else if (type === 'depth') {
+      const depth = typeof id === 'number' ? id : typeof id === 'string' && /^[0-5]$/.test(id) ? Number(id) : NaN;
+      const quote = expeditionQuote(depth);
+      if (!quote.unlocked) return quote.reason;
+      if (state.depth === depth && state.activity === 'hunt') return `已在${DEPTHS[depth].name}，当前清剿继续。`;
+      if (state.depth !== depth || state.activity !== 'hunt') {
+        if (state.activity === 'boss') flushBossHit();
+        state.progress = 0; state.encounterSerial++;
+      }
+      if (state.activity !== 'hunt') { state.combatStacks = 0; state.combatStackProgress = 0; }
+      state.depth = depth; state.activity = 'hunt';
+      message = `已选择${DEPTHS[depth].name}，自动打宝采用该深度；首领与钓鱼不受影响。`;
     } else if (type === 'zone') {
       const zone = ZONES.find(z => z.id === id); if (!zone) return '区域不存在。'; if (zone.level > state.level) return `需要达到 ${zone.level} 级才能进入。`;
       if (state.zoneId !== id || state.activity !== 'hunt') { if (state.activity === 'boss') flushBossHit(); state.progress = 0; state.encounterSerial++; }
@@ -478,5 +509,5 @@ export function createGame(storage) {
     log(state.offlineSummary);
   } else state.offlineSummary = '';
   save();
-  return { state, stats, tick, act, save, combat, eventsSince, compareItem, forgeQuote };
+  return { state, stats, tick, act, save, combat, eventsSince, compareItem, forgeQuote, expeditionQuote };
 }
