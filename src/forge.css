@@ -1,0 +1,29 @@
+.ember-forge{margin:20px 0;border:1px solid #705037;background:linear-gradient(125deg,#42281955,#191416 75%)}
+.ember-forge summary{display:flex;align-items:center;gap:12px;padding:15px;cursor:pointer;list-style:none}
+.ember-forge summary::-webkit-details-marker{display:none}
+.ember-forge summary:focus-visible{outline:2px solid #dfbd81;outline-offset:2px}
+.forge-symbol{font-size:29px;color:#df9a5a;text-shadow:0 0 18px #f87b4140}
+.ember-forge summary>span:nth-child(2){flex:1;min-width:0}
+.ember-forge summary b{display:block;font-size:13px;color:#e8c498;letter-spacing:2px}
+.ember-forge summary small{display:block;font-size:10px;color:#b59a80;margin-top:5px;line-height:1.6}
+.ember-forge summary em{font-size:12px;color:#cfab79;font-style:normal;white-space:nowrap}
+.ember-forge summary em span{margin-left:15px;display:inline-block}
+.ember-forge[open] summary{border-bottom:1px solid #65452d}
+.ember-forge[open] summary em span{transform:rotate(180deg)}
+.forge-body{padding:16px}
+.forge-body>p{color:#b7a38d;font-size:11px;line-height:1.9;margin:0 0 12px}
+.forge-body strong{color:#dfc59c;font-weight:500}
+.forge-upgrade{display:flex;align-items:center;gap:16px;padding:13px 0;font-size:11px}
+.forge-upgrade>span:first-child{flex:1;color:#c1aa8d}
+.forge-upgrade>b{font-size:22px;font-family:Georgia,serif;color:#c0ad91}
+.forge-upgrade>b:last-child{color:#eac48d}
+.forge-body .forge-affinity-note{font-size:10px;color:#a49482;border-bottom:1px solid #4a3528;padding:0 0 13px}
+.forge-costs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
+.forge-costs>div{display:grid;grid-template-columns:1fr auto;gap:8px;padding:11px;background:#0f101280;border:1px solid #493626}
+.forge-costs span{color:#b3a08c;font-size:10px}.forge-costs b{color:#dfbc85;font-size:13px;overflow-wrap:anywhere}
+.forge-costs small{grid-column:1/-1;text-align:right;color:#b4b28e;font-size:10px;overflow-wrap:anywhere}.forge-costs small.short{color:#db9b86}
+.forge-body .primary{font-size:12px;min-height:44px;padding:11px 8px}
+.forge-body .forge-status{margin:12px 0 0;font-size:10px;color:#b8a388}
+.forge-complete{color:#e0bf89!important;text-align:center;padding:12px}
+.balance-notice{display:flex;align-items:center;gap:16px;padding:16px 18px;border:1px solid #87623d;background:#32271c;color:#cdbb9b;line-height:1.8;font-size:11px}.balance-notice>div{flex:1}.balance-notice b{display:block;color:#e1c394;font-size:13px;margin-bottom:3px}.balance-notice button{flex:0 0 auto;min-height:44px}
+@media(max-width:640px){.ember-forge summary{padding:12px;gap:9px}.ember-forge summary small{font-size:9px}.ember-forge summary em span{margin-left:7px}.forge-body{padding:12px}.forge-costs{gap:8px}.forge-costs>div{padding:10px;grid-template-columns:1fr}.forge-costs b{font-size:17px}.forge-costs small{text-align:left}.forge-upgrade{gap:12px}.forge-upgrade>b{font-size:20px}}

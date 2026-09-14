@@ -1,4 +1,4 @@
-import { CLASSES, createGame } from '../src/engine.js';
+import { CLASSES, createGame, BALANCE } from '../src/engine.js';
 
 // A reproducible diagnostic, not a claim that the economy is balanced.
 // Hold initial gear, spend no talents, remain in grave, collect every real loot
@@ -30,7 +30,7 @@ for (const profession of CLASSES) for (const build of profession.builds) {
   }
 }
 console.log(JSON.stringify({
-  version: '0.5-loot-protection-baseline',
-  method: '固定种子184731；墓园挂机；初始装备；不加技能、不换装、不交易、不清理仓库；3秒步长；传奇溢出进入120格仓库，再满保留单件待处理并暂停。hours是请求观察时长，activeHours是实际战斗时长。传奇持有数含初始传奇与保护装备；protectedSaleValue为未兑换的保护装备售价值，不是金币收益。仅建立基线，尚未完成成长平衡。',
+  version: '0.6-progression-forge-baseline', balance: BALANCE,
+  method: '固定种子184731；墓园挂机；初始装备；不加技能、不换装、不精炼、不交易、不清理仓库；3秒步长；经验二次曲线与当前传奇概率均直接来自BALANCE。传奇溢出进入120格仓库，再满保留单件待处理并暂停。hours是请求观察时长，activeHours是实际战斗时长。传奇持有数含初始传奇与保护装备；protectedSaleValue为未兑换的保护装备售价值，不是金币收益。仅建立基线，尚未完成最终平衡。',
   rows,
 }, null, 2));

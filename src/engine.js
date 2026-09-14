@@ -40,12 +40,14 @@ export const ZONES = [
 ];
 
 export const SAVE_KEY = 'ashen-covenant-save-v1';
+export const BALANCE = Object.freeze({ version: 1, xpQuadratic: 24, bossLegendaryChance: 0.08, bossXp: 180, normalLegendaryBase: 0.006, magicFindDivisor: 6000, normalLegendaryCap: 0.015 });
+const levelExperience = level => 80 + level * 35 + BALANCE.xpQuadratic * level ** 2;
 export const INVENTORY_CAPACITY = 60;
 export const VAULT_CAPACITY = 120;
 const ELEMENT_NAMES = { fire: '火焰', frost: '冰霜', lightning: '闪电', physical: '物理', poison: '毒素', shadow: '暗影', magic: '魔法' };
 const SLOTS = ['weapon', 'armor', 'ring'];
 const ELEMENTS = Object.keys(ELEMENT_NAMES);
-const cloneItem = item => item ? { ...item, locked: item.locked === true, affixes: [...item.affixes] } : null;
+const cloneItem = item => item ? { ...item, locked: item.locked === true, forgeRank: Number.isInteger(item.forgeRank) ? Math.max(0, Math.min(5, item.forgeRank)) : 0, affixes: [...item.affixes] } : null;
 const itemValid = (i) => i && typeof i.id === 'string' && typeof i.name === 'string' && SLOTS.includes(i.slot) && ['magic', 'rare', 'legendary'].includes(i.rarity) && ELEMENTS.includes(i.element) && ['power', 'bonus', 'value'].every(k => Number.isFinite(i[k]) && i[k] >= 0 && i[k] <= 1e7) && Array.isArray(i.affixes) && i.affixes.every(x => typeof x === 'string');
 const initialItems = () => [
   ['ember-blade', '山脊战斧', 'weapon', 'rare', 22, 'physical', 18, 160],
@@ -56,15 +58,15 @@ const initialItems = () => [
   ['ghost-ring', '亡者的回信', 'ring', 'legendary', 10, 'shadow', 30, 480],
   ['storm-coat', '风暴遗衣', 'armor', 'rare', 21, 'lightning', 20, 170],
   ['iron-maul', '破晓重锤', 'weapon', 'rare', 28, 'physical', 18, 180],
-].map(([id, name, slot, rarity, power, element, bonus, value]) => ({ id, name, slot, rarity, power, element, bonus, value, locked: false, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`] }));
+].map(([id, name, slot, rarity, power, element, bonus, value]) => ({ id, name, slot, rarity, power, element, bonus, value, locked: false, forgeRank: 0, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`] }));
 
 function freshState() {
   const inventory = initialItems();
-  return { version: 1, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, pauseReason: null, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, vault: [], pendingLoot: null, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
+  return { version: 1, balanceVersion: BALANCE.version, classId: 'barbarian', buildId: 'whirlwind', talents: { barbarian: {}, sorceress: {} }, combatStacks: 0, combatStackProgress: 0, simTime: 0, eventSequence: 0, encounterSerial: 0, bossPulseProgress: 0, bossPulseDamage: 0, bossPulseAllyDamage: 0, bossAttackIndex: 0, level: 1, xp: 0, gold: 1280, shards: 12, activity: 'hunt', zoneId: 'grave', running: true, pauseReason: null, progress: 0, kills: 0, fish: 0, boss: { hp: 28000, maxHp: 28000, contribution: 0, kills: 0 }, inventory, vault: [], pendingLoot: null, equipment: { weapon: inventory[0], armor: inventory[1], ring: inventory[2] }, listings: [
     { id: 'market-1', owner: 'market', price: 720, item: { ...inventory[5], id: 'market-ghost', name: '暮钟指环' } },
     { id: 'market-2', owner: 'market', price: 350, item: { ...inventory[3], id: 'market-frost', name: '冬眠枝杖' } },
     { id: 'market-3', owner: 'market', price: 420, item: { ...inventory[6], id: 'market-storm', name: '碎星长衣' } },
-  ], logs: ['灰烬契约已缔结。你的角色开始自动探索遗忘墓园。'], offlineSummary: '', savedAt: Date.now(), rng: 184731, sequence: 20 };
+  ], logs: ['灰烬契约已缔结。你的角色开始自动探索遗忘墓园。'], balanceMigrationNotice: '', offlineSummary: '', savedAt: Date.now(), rng: 184731, sequence: 20 };
 }
 
 function restore(raw) {
@@ -72,6 +74,8 @@ function restore(raw) {
   if (!raw || raw.version !== 1 || !Array.isArray(raw.inventory) || raw.inventory.length > INVENTORY_CAPACITY || !raw.inventory.every(itemValid)) return s;
   for (const k of ['level', 'xp', 'gold', 'shards', 'kills', 'fish', 'savedAt', 'rng', 'sequence']) if (Number.isFinite(raw[k]) && raw[k] >= 0) s[k] = Math.min(raw[k], Number.MAX_SAFE_INTEGER);
   s.level = Math.max(1, Math.floor(s.level));
+  const migrateBalance = !Number.isInteger(raw.balanceVersion) || raw.balanceVersion < BALANCE.version;
+  if (migrateBalance) s.xp = Math.min(levelExperience(s.level) - 1, Math.floor(Math.max(0, Math.min(1, s.xp / (80 + s.level * 35))) * levelExperience(s.level)));
   s.rng = s.rng >>> 0;
   for (const key of ['simTime', 'eventSequence', 'encounterSerial', 'bossPulseDamage', 'bossPulseAllyDamage', 'bossAttackIndex']) if (Number.isFinite(raw[key]) && raw[key] >= 0) s[key] = Math.min(raw[key], Number.MAX_SAFE_INTEGER);
   for (const key of ['eventSequence', 'encounterSerial', 'bossAttackIndex']) s[key] = Math.floor(s[key]);
@@ -134,6 +138,10 @@ function restore(raw) {
   else s.pauseReason = s.running ? null : 'manual';
   if (raw.boss && ['hp', 'maxHp', 'contribution', 'kills'].every(k => Number.isFinite(raw.boss[k]) && raw.boss[k] >= 0) && raw.boss.maxHp > 0) s.boss = { hp: Math.min(raw.boss.hp, raw.boss.maxHp), maxHp: raw.boss.maxHp, contribution: raw.boss.contribution, kills: raw.boss.kills };
   if (Array.isArray(raw.logs)) s.logs = raw.logs.filter(x => typeof x === 'string').slice(0, 30);
+  if (migrateBalance) {
+    s.balanceMigrationNotice = `成长节奏已更新：保留 ${s.level} 级，当前等级经验按原完成比例换算；财富、装备与技能分配保持不变。`;
+    s.logs = [s.balanceMigrationNotice, ...s.logs].slice(0, 30);
+  }
   if (repaired) s.logs = [`已校验存档装备：合并重复物品，忽略 ${repaired} 条重复或无效记录；超出合法容量的异常记录未载入。`, ...s.logs].slice(0, 30);
   if (legacy) s.logs = [`旧契约已迁移为${cls.name}·${cls.builds.find(b => b.id === s.buildId).name}；等级、装备、货币与挂单完整保留，可免费分配技能点。`, ...s.logs].slice(0, 30);
   return s;
@@ -223,7 +231,7 @@ export function createGame(storage) {
     // Defense and reduction lower recovery time; no manual healing or death spiral.
     const recovery = (1.12 - Math.min(0.2, defense / 800)) * (1 - damageReduction * 0.5);
     const huntSeconds = Math.max(3.5, Math.min(14, zone.seconds * (100 + zone.level * 8) / Math.max(35, effectiveDps * (1 + areaBonus)) * recovery));
-    return { dps, defense, magicFind: 15 + items.filter(i => i.rarity === 'legendary').length * 20 + Math.floor(state.level / 2) + magicFindBonus, xpNext: 80 + state.level * 35, element: build.element, effectiveDps, zoneResistance, huntSeconds, attackSpeed, areaBonus, bossDps, damageReduction, trainingSpent, skillPoints: Math.max(0, state.level + 2 - trainingSpent), buildEffect: build.id === 'frenzy' ? `狂乱 ${state.combatStacks}/5 层 · 攻速 +${Math.round((attackSpeed - 1) * 100)}%` : build.mechanic };
+    return { dps, defense, magicFind: 15 + items.filter(i => i.rarity === 'legendary').length * 20 + Math.floor(state.level / 2) + magicFindBonus, xpNext: levelExperience(state.level), element: build.element, effectiveDps, zoneResistance, huntSeconds, attackSpeed, areaBonus, bossDps, damageReduction, trainingSpent, skillPoints: Math.max(0, state.level + 2 - trainingSpent), buildEffect: build.id === 'frenzy' ? `狂乱 ${state.combatStacks}/5 层 · 攻速 +${Math.round((attackSpeed - 1) * 100)}%` : build.mechanic };
   }
   function compareItem(id) {
     const item = findOwned(id)?.item || state.listings.find(l => l.item.id === id)?.item;
@@ -232,22 +240,39 @@ export function createGame(storage) {
     const differences = Object.fromEntries(['dps', 'defense', 'magicFind', 'bossDps', 'huntSeconds'].map(key => [key, after[key] - before[key]]));
     return { before, after, differences, currentItem: cloneItem(state.equipment[item.slot]), item: cloneItem(item) };
   }
+  function forgeQuote(id) {
+    const found = findOwned(id);
+    const item = found?.item || state.listings.find(listing => listing.item.id === id)?.item || null;
+    const rank = item ? cloneItem(item).forgeRank : 0;
+    const costShards = 20 * 2 ** rank, costGold = Math.max(100, item?.value || 0) * 2 ** (rank + 1);
+    let reason = '';
+    if (!item) reason = '未找到这件装备。';
+    else if (!found) reason = '挂单装备不能精炼，请先撤回。';
+    else if (found.location === 'pending') reason = '请先安置待处理装备，再进行精炼。';
+    else if (item.locked) reason = '这件装备已锁定，请先解锁。';
+    else if (rank >= 5) reason = '已达到五阶精炼上限。';
+    else if (item.bonus > 1e7 - 3) reason = '该装备亲和已达到可精炼上限。';
+    else if (state.shards < costShards) reason = '余烬不足。';
+    else if (state.gold < costGold) reason = '金币不足。';
+    return { item: cloneItem(item), rank, maxRank: 5, bonusBefore: item?.bonus || 0, bonusAfter: (item?.bonus || 0) + (rank < 5 && item ? 3 : 0), costShards, costGold, canForge: reason === '', reason };
+  }
   function experience(amount) {
     state.xp += amount;
     while (state.xp >= stats().xpNext) { state.xp -= stats().xpNext; state.level++; log(`晋升至 ${state.level} 级，所有基础属性提升。`); }
   }
-  function loot(forceLegendary = false) {
+  function loot(bossReward = false) {
     const zone = ZONES.find(z => z.id === state.zoneId);
     const slot = SLOTS[Math.floor(random() * 3)];
     const element = ELEMENTS[Math.floor(random() * ELEMENTS.length)];
     const roll = random();
-    const rarity = forceLegendary || roll < 0.025 + stats().magicFind / 1800 ? 'legendary' : roll < 0.42 ? 'rare' : 'magic';
+    const legendaryChance = Math.min(BALANCE.normalLegendaryCap, BALANCE.normalLegendaryBase + stats().magicFind / BALANCE.magicFindDivisor);
+    const rarity = (bossReward ? state.boss.kills === 1 || roll < BALANCE.bossLegendaryChance : roll < legendaryChance) ? 'legendary' : bossReward || roll < 0.42 ? 'rare' : 'magic';
     const tier = { magic: 1, rare: 1.5, legendary: 2.2 }[rarity];
     const power = Math.round((9 + zone.level * 2 + state.level * 0.7 + random() * 9) * tier);
     const bonus = Math.round((7 + random() * 12) * tier);
     const prefix = { fire: '余烬', frost: '霜痕', lightning: '裂星', physical: '铁誓', poison: '疫月', shadow: '暮魂', magic: '回响' }[element];
     const name = `${prefix}${{ weapon: '仪式刃', armor: '守夜衣', ring: '契印' }[slot]}${rarity === 'legendary' ? ' · 永寂' : ''}`;
-    const item = { id: `drop-${++state.sequence}`, name, slot, rarity, power, element, bonus, value: Math.round(power * tier * 5), locked: false, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`, ...(rarity === 'legendary' ? ['+20% 魔法寻获'] : [])] };
+    const item = { id: `drop-${++state.sequence}`, name, slot, rarity, power, element, bonus, value: Math.round(power * tier * 5), locked: false, forgeRank: 0, affixes: [`+${bonus}% ${ELEMENT_NAMES[element]}伤害`, `+${power} ${slot === 'armor' ? '护甲' : '力量'}`, ...(rarity === 'legendary' ? ['+20% 魔法寻获'] : [])] };
     let destination;
     if (state.inventory.length < INVENTORY_CAPACITY) { state.inventory.push(item); destination = 'inventory'; log(`获得${{ magic: '魔法', rare: '稀有', legendary: '传奇' }[rarity]}装备：${name}。`); }
     else if (rarity !== 'legendary') { state.gold += item.value; destination = 'sold'; log(`背包已满：非传奇装备${name} 已自动出售，获得 ${item.value} 金币。`); }
@@ -283,10 +308,10 @@ export function createGame(storage) {
         state.progress = 1 - state.boss.hp / state.boss.maxHp;
         if (state.boss.hp < 0.00001) {
           emit('bossDefeat', { encounterId: id, monsterId: 'boss-morlgas', target: '骸冠君王·莫尔迦斯', hp: 0, maxHp: state.boss.maxHp, contribution: state.boss.contribution });
-          state.boss.kills++; state.gold += 420; state.shards += 8; experience(120);
+          state.boss.kills++; state.gold += 420; state.shards += 8; experience(BALANCE.bossXp);
           const drop = loot(true);
-          rewardEvent({ encounterId: id, monsterId: 'boss-morlgas', target: '骸冠君王·莫尔迦斯', gold: 420 + (drop.autoSold ? drop.item.value : 0), xp: 120, shards: 8, ...drop });
-          log('世界首领「骸冠君王·莫尔迦斯」已倒下：获得 420 金币、8 余烬与传奇战利品。（同伴为本地模拟）');
+          rewardEvent({ encounterId: id, monsterId: 'boss-morlgas', target: '骸冠君王·莫尔迦斯', gold: 420 + (drop.autoSold ? drop.item.value : 0), xp: BALANCE.bossXp, shards: 8, ...drop });
+          log(`世界首领「骸冠君王·莫尔迦斯」已倒下：获得 420 金币、8 余烬与${drop.item.rarity === 'legendary' ? '传奇' : '稀有'}战利品。${state.boss.kills === 1 ? '首次击败保证传奇。' : ''}（同伴为本地模拟）`);
           state.boss.hp = state.boss.maxHp; state.boss.contribution = 0; state.progress = 0; state.bossAttackIndex = 0;
         }
       } else {
@@ -379,6 +404,16 @@ export function createGame(storage) {
       state.activity = id; state.running = true; state.pauseReason = null;
       message = `已切换至${{ hunt: '自动打宝', fish: '幽潭垂钓', boss: '世界首领（本地模拟）' }[id]}。`;
     } else if (type === 'pause') { state.running = !state.running; state.pauseReason = state.running ? null : 'manual'; message = state.running ? '已恢复自动冒险。' : '已暂停冒险，离线期间也不会推进。';
+    } else if (type === 'forge') {
+      const quote = forgeQuote(id);
+      if (!quote.canForge) return quote.reason;
+      const item = findOwned(id).item;
+      state.shards -= quote.costShards; state.gold -= quote.costGold;
+      item.bonus = quote.bonusAfter; item.forgeRank = quote.rank + 1;
+      const elementAffix = `+${item.bonus}% ${ELEMENT_NAMES[item.element]}伤害`;
+      const index = item.affixes.findIndex(affix => affix.includes(`${ELEMENT_NAMES[item.element]}伤害`));
+      if (index >= 0) item.affixes[index] = elementAffix; else item.affixes.unshift(elementAffix);
+      message = `${item.name}精炼至 ${item.forgeRank} 阶，${ELEMENT_NAMES[item.element]}加成提升至 ${item.bonus}%。消耗 ${quote.costShards} 余烬、${quote.costGold} 金币。`;
     } else if (type === 'sellMagic') {
       const eligible = state.inventory.filter(item => item.rarity === 'magic' && !item.locked && !equipped(item.id));
       const ids = new Set(eligible.map(item => item.id));
@@ -443,5 +478,5 @@ export function createGame(storage) {
     log(state.offlineSummary);
   } else state.offlineSummary = '';
   save();
-  return { state, stats, tick, act, save, combat, eventsSince, compareItem };
+  return { state, stats, tick, act, save, combat, eventsSince, compareItem, forgeQuote };
 }

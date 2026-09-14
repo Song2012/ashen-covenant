@@ -2,7 +2,7 @@ import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { createGame, SAVE_KEY } from '../src/engine.js';
-const out = 'artifacts/v05';
+const out = process.env.TEST_OUT || 'artifacts/v05';
 await fs.mkdir(out, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const errors = [], checks = [];

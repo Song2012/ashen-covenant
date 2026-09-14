@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGame, SAVE_KEY, CLASSES, INVENTORY_CAPACITY, VAULT_CAPACITY } from './engine.js';
+import { createGame, SAVE_KEY, CLASSES, INVENTORY_CAPACITY, VAULT_CAPACITY, BALANCE } from './engine.js';
 import { MONSTERS, getMonster } from './encounters.js';
 
 const memory = () => { const data = new Map(); return { getItem: k => data.get(k) || null, setItem: (k, v) => data.set(k, v) }; };
@@ -532,15 +532,14 @@ test('hunt event timing and identities are independent of online tick size', () 
   assert.equal(batch.state.rng, small.state.rng);
 });
 
-test('v0.5 preserves one-hour drop curve while retained legendary value replaces liquidation gold', () => {
-  const baseline = { whirlwind: [29,164515,952,1900120855], frenzy: [29,169753,971,3259712130], warcry: [25,111407,711,1357681852], fireball: [20,64599,471,4271917375], blizzard: [23,90658,609,4185180971], chainlightning: [27,131638,807,76333626] };
-  const protection = { whirlwind: [146761,25,17754], frenzy: [151163,26,18590], warcry: [98339,20,13068], fireball: [58703,10,5896], blizzard: [81616,14,9042], chainlightning: [118735,19,12903] };
+test('v0.6 one-hour baseline slows initial progression and retains protected loot without artificial liquidation income', () => {
+  const baseline = { whirlwind: [11,91720,773,1008873296,3,1738], frenzy: [11,101174,833,355995720,3,1738], warcry: [10,56439,517,3521610042,3,1562], fireball: [8,36811,365,3196061519,0,0], blizzard: [9,48990,453,3116899704,1,506], chainlightning: [10,64923,578,1529672868,3,1738] };
   for (const cls of CLASSES) for (const build of cls.builds) {
     const game = createGame(memory());
     game.act('class', cls.id); game.act('build', build.id); game.tick(3600);
     const protectedValue = game.state.vault.reduce((sum, item) => sum + item.value, 0);
-    assert.deepEqual([game.state.gold, game.state.vault.length, protectedValue], protection[build.id], `${build.id}/new cash and retained items`);
-    assert.deepEqual([game.state.level, game.state.gold + protectedValue, game.state.kills, game.state.rng], baseline[build.id], `${build.id}/unchanged generation`);
+    assert.deepEqual([game.state.level, game.state.gold, game.state.kills, game.state.rng, game.state.vault.length, protectedValue], baseline[build.id], `${build.id}/actual new balance`);
+    assert.ok(game.state.level >= 8 && game.state.level <= 12);
     assert.ok(game.state.vault.every(item => item.rarity === 'legendary'));
     assert.equal(game.state.pendingLoot, null);
   }
@@ -781,6 +780,7 @@ test('offline overflow pauses at the same reward boundary without losing legenda
 
 test('eight-hour bounded and small ticks stop identically at protected loot capacity', () => {
   const large = createGame(memory()), small = createGame(memory());
+  for (const game of [large, small]) { fillBag(game); fillVault(game); game.state.vault.pop(); }
   large.tick(8 * 3600);
   for (let i = 0; i < 8 * 1200; i++) small.tick(3);
   for (const field of ['gold', 'level', 'kills', 'rng', 'sequence', 'running', 'pauseReason']) assert.equal(large.state[field], small.state[field], field);
@@ -796,7 +796,7 @@ test('fishing legendary drops obey the same protection and exact stop boundary a
     game.act('activity', 'fish');
     // This persisted seed yields a treasure catch and legendary quality under
     // the ordinary fishing RNG sequence; no drop hook or forced reward path.
-    game.state.rng = 1761;
+    game.state.rng = 3569;
     const gold = game.state.gold;
     game.tick(full ? 3600 : 8);
     const item = full ? game.state.pendingLoot : game.state.vault[0];
@@ -820,4 +820,179 @@ test('external equip cannot discard an item when the full bag has an empty equip
   assert.equal(game.state.equipment.weapon.id, 'external-weapon');
   assert.ok(game.state.inventory.some(i => i.id === 'external-weapon'));
   assert.ok(!game.state.vault.some(i => i.id === 'external-weapon'));
+});
+
+test('balance migration preserves level and current-level completion exactly once', () => {
+  const storage = memory(); const game = createGame(storage);
+  assert.equal(game.state.balanceVersion, BALANCE.version);
+  assert.ok(!game.state.logs.some(l => l.includes('成长节奏已更新')));
+  const raw = JSON.parse(storage.getItem(SAVE_KEY));
+  delete raw.balanceVersion;
+  Object.assign(raw,{ level:85,xp:1000,gold:54321,shards:987,running:false,fish:123 });
+  raw.inventory[0].locked = true;
+  raw.talents.barbarian = { whirlwind:10,weaponMastery:10,ironSkin:5 };
+  raw.boss.kills = 12;
+  storage.setItem(SAVE_KEY,JSON.stringify(raw));
+  const migrated = createGame(storage);
+  const expected = Math.floor(raw.xp / (80+85*35) * (80+85*35+24*85**2));
+  assert.equal(migrated.state.level,85);
+  assert.equal(migrated.state.xp,expected);
+  assert.equal(migrated.state.balanceVersion,1);
+  for(const key of ['gold','shards','fish']) assert.equal(migrated.state[key],raw[key]);
+  assert.deepEqual(migrated.state.inventory,raw.inventory);
+  assert.deepEqual(migrated.state.talents.barbarian,raw.talents.barbarian);
+  assert.equal(migrated.state.boss.kills,12);
+  assert.equal(migrated.state.logs.filter(l=>l.includes('成长节奏已更新')).length,1);
+  const reopened = createGame(storage);
+  assert.equal(reopened.state.xp,expected);
+  assert.equal(reopened.state.logs.filter(l=>l.includes('成长节奏已更新')).length,1);
+});
+
+test('boss first kill guarantees legendary, later kills have rare floor and grant the configured XP', () => {
+  const storage = memory(); const game = createGame(storage);
+  game.act('activity','boss');
+  game.state.rng = 1; game.state.boss.hp = 1; game.tick(0.01);
+  let reward = game.eventsSince().find(e=>e.type==='loot');
+  assert.equal(reward.item.rarity,'legendary');
+  assert.equal(reward.xp,BALANCE.bossXp);
+  game.save();
+  const restored = createGame(storage);
+  restored.state.rng = 1; restored.state.boss.hp = 1; restored.tick(0.01);
+  reward = restored.eventsSince().find(e=>e.type==='loot');
+  assert.equal(reward.item.rarity,'rare');
+  assert.equal(restored.state.boss.kills,2);
+  assert.ok(!restored.state.logs[0].includes('首次击败'));
+});
+
+test('forge quote is pure, detached and computes fixed per-rank costs', () => {
+  const storage = memory(); const game = createGame(storage);
+  game.state.shards = 500; game.state.gold = 5000; game.save();
+  const item = game.state.equipment.weapon, serialized = JSON.stringify(game.state), saved = storage.getItem(SAVE_KEY);
+  const quote = game.forgeQuote(item.id);
+  assert.equal(quote.rank,0); assert.equal(quote.maxRank,5);
+  assert.equal(quote.costShards,20); assert.equal(quote.costGold,320);
+  assert.equal(quote.bonusAfter,item.bonus+3); assert.equal(quote.canForge,true);
+  quote.item.bonus = -1; quote.item.affixes[0] = 'caller change';
+  assert.equal(JSON.stringify(game.state),serialized);
+  assert.equal(storage.getItem(SAVE_KEY),saved);
+  assert.equal(game.forgeQuote('missing').canForge,false);
+  assert.equal(game.forgeQuote('missing').item,null);
+});
+
+test('forge atomically improves equipped affinity and preserves identity, base properties and RNG', () => {
+  const storage = memory(); const game = createGame(storage);
+  game.state.shards = 100; game.state.gold = 2000;
+  const item = game.state.equipment.weapon;
+  const reference = item, before = { ...item,affixes:[...item.affixes] }, stats = game.stats(), rng = game.state.rng, sequence = game.state.sequence, progress = game.state.progress;
+  const message = game.act('forge',item.id);
+  assert.match(message,/精炼至 1 阶/);
+  assert.equal(game.state.shards,80); assert.equal(game.state.gold,1680);
+  assert.equal(item.bonus,before.bonus+3); assert.equal(item.forgeRank,1);
+  assert.equal(game.state.equipment.weapon,reference);
+  assert.equal(game.state.inventory.find(i=>i.id===item.id),reference);
+  for(const key of ['id','rarity','element','power','value']) assert.equal(item[key],before[key]);
+  assert.equal(game.state.rng,rng); assert.equal(game.state.sequence,sequence); assert.equal(game.state.progress,progress);
+  assert.ok(game.stats().dps>stats.dps);
+  assert.equal(item.affixes[0],`+${item.bonus}% 物理伤害`);
+  const restored = createGame(storage);
+  assert.equal(restored.state.equipment.weapon.forgeRank,1);
+  assert.equal(restored.state.equipment.weapon.bonus,item.bonus);
+  assert.equal(restored.state.equipment.weapon,restored.state.inventory.find(i=>i.id===item.id));
+});
+
+test('stale forge quotes cannot bypass resource, lock, rank or ownership checks', () => {
+  const game = createGame(memory()); game.state.gold=10000;game.state.shards=1000;
+  const id = game.state.equipment.weapon.id;
+  assert.equal(game.forgeQuote(id).canForge,true);
+  game.state.shards=19;
+  let before=JSON.stringify(game.state); assert.match(game.act('forge',id),/余烬不足/); assert.equal(JSON.stringify(game.state),before);
+  game.state.shards=1000;game.state.gold=319;
+  before=JSON.stringify(game.state); assert.match(game.act('forge',id),/金币不足/); assert.equal(JSON.stringify(game.state),before);
+  game.state.gold=10000;game.act('lock',id);
+  before=JSON.stringify(game.state); assert.match(game.act('forge',id),/锁定/); assert.equal(JSON.stringify(game.state),before);
+  game.act('lock',id);
+  for(let i=0;i<5;i++) game.act('forge',id);
+  assert.equal(game.state.equipment.weapon.forgeRank,5);
+  const quote=game.forgeQuote(id);assert.equal(quote.canForge,false);assert.equal(quote.bonusAfter,quote.bonusBefore);
+  before=JSON.stringify(game.state);assert.match(game.act('forge',id),/上限/);assert.equal(JSON.stringify(game.state),before);
+});
+
+test('vault forging works without equipping while pending and listed items cannot forge', () => {
+  const game=createGame(memory());game.state.shards=500;game.state.gold=10000;
+  game.state.vault.push(testItem(game,'stored-forge',{forgeRank:2,bonus:30}));
+  const equippedId=game.state.equipment.weapon.id;
+  const quote=game.forgeQuote('stored-forge');assert.equal(quote.costShards,80);assert.equal(quote.costGold,1280);
+  game.act('forge','stored-forge');
+  assert.equal(game.state.vault[0].bonus,33);assert.equal(game.state.vault[0].forgeRank,3);
+  assert.equal(game.state.equipment.weapon.id,equippedId);
+  game.state.pendingLoot=testItem(game,'pending-forge');game.state.running=false;
+  assert.match(game.forgeQuote('pending-forge').reason,/待处理/);
+  assert.equal(game.forgeQuote('pending-forge').canForge,false);
+  game.act('list','frost-wand');
+  assert.match(game.forgeQuote('frost-wand').reason,/挂单/);
+  assert.equal(game.forgeQuote('frost-wand').canForge,false);
+});
+
+test('missing forge ranks migrate to zero and malformed ranks normalize without losing items', () => {
+  const storage=memory();createGame(storage);
+  const raw=JSON.parse(storage.getItem(SAVE_KEY));
+  delete raw.inventory[0].forgeRank;raw.inventory[1].forgeRank=999;raw.inventory[2].forgeRank=-4;raw.inventory[3].forgeRank=2.4;
+  raw.inventory[4].forgeRank=3;raw.inventory[4].locked=true;
+  storage.setItem(SAVE_KEY,JSON.stringify(raw));
+  const game=createGame(storage);
+  assert.deepEqual(game.state.inventory.slice(0,5).map(i=>i.forgeRank),[0,5,0,0,3]);
+  assert.equal(game.state.inventory[4].locked,true);assert.equal(game.state.inventory.length,8);
+});
+
+test('refined equipment produces equivalent online and offline-size simulation results', () => {
+  const storage=memory();const batch=createGame(storage);batch.state.shards=100;batch.state.gold=5000;
+  batch.act('forge',batch.state.equipment.weapon.id);
+  batch.act('build','frenzy');batch.act('activity','boss');batch.save();
+  const copy=memory();copy.setItem(SAVE_KEY,storage.getItem(SAVE_KEY));const small=createGame(copy);
+  batch.tick(900);for(let i=0;i<300;i++)small.tick(3);
+  for(const key of ['level','xp','gold','shards','rng','sequence'])assert.equal(batch.state[key],small.state[key],key);
+  assert.deepEqual(batch.state.inventory,small.state.inventory);assert.deepEqual(batch.state.vault,small.state.vault);
+  assert.ok(Math.abs(batch.state.boss.hp-small.state.boss.hp)<1e-6);
+});
+
+test('forge cannot push a valid legacy affinity past the save schema limit', () => {
+  const storage=memory();const game=createGame(storage);
+  game.state.gold=10000;game.state.shards=100;game.state.level=77;
+  const item=game.state.equipment.weapon;item.bonus=1e7;
+  const before=JSON.stringify(game.state);
+  assert.equal(game.forgeQuote(item.id).canForge,false);
+  assert.match(game.act('forge',item.id),/亲和.*上限/);
+  assert.equal(JSON.stringify(game.state),before);
+  game.save();const restored=createGame(storage);
+  assert.equal(restored.state.level,77);assert.equal(restored.state.gold,10000);
+  assert.equal(restored.state.equipment.weapon.bonus,1e7);
+  assert.equal(restored.state.inventory.length,game.state.inventory.length);
+});
+
+test('ordinary legendary chance stays capped even for high-level legacy magic find', () => {
+  const game=createGame(memory());game.state.level=10000;game.state.rng=901;
+  assert.ok(BALANCE.normalLegendaryBase+game.stats().magicFind/BALANCE.magicFindDivisor>BALANCE.normalLegendaryCap);
+  // This seed's ordinary rarity roll is 0.01961258: above the 1.5% cap.
+  game.tick(game.stats().huntSeconds);
+  const reward=game.eventsSince().find(e=>e.type==='loot');
+  assert.equal(reward.item.rarity,'rare');
+});
+
+test('one-time migration notice survives long offline log churn but never replays on next load', () => {
+  const storage=memory();const fresh=createGame(storage);
+  assert.equal(fresh.state.balanceMigrationNotice,'');
+  const raw=JSON.parse(storage.getItem(SAVE_KEY));
+  delete raw.balanceVersion;
+  raw.savedAt=Date.now()-8*3600000;
+  raw.balanceMigrationNotice='untrusted stale notice';
+  storage.setItem(SAVE_KEY,JSON.stringify(raw));
+  const migrated=createGame(storage);
+  assert.ok(migrated.state.kills>100);
+  assert.match(migrated.state.balanceMigrationNotice,/成长节奏已更新/);
+  assert.ok(!migrated.state.balanceMigrationNotice.includes('untrusted'));
+  assert.ok(migrated.state.logs.length<=30);
+  const reopened=createGame(storage);
+  assert.equal(reopened.state.balanceMigrationNotice,'');
+  storage.setItem(SAVE_KEY,JSON.stringify({version:1,balanceMigrationNotice:'bad',inventory:[{invalid:true}]}));
+  assert.equal(createGame(storage).state.balanceMigrationNotice,'');
 });

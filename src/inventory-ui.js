@@ -1,5 +1,6 @@
 import { itemPortraitDataUrl } from './item-art.js';
 import { INVENTORY_CAPACITY, VAULT_CAPACITY } from './engine.js';
+import { forgeMarkup } from './forge-ui.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rarity = { magic: '魔法', rare: '稀有', legendary: '传奇' };
 const slots = { weapon: '武器', armor: '护甲', ring: '戒指' };
@@ -9,7 +10,7 @@ export const itemImage = item => `<img class="pixel-item" src="${itemPortraitDat
 export function itemRows(items, state) {
   return items.map(item => {
     const worn = state.equipment[item.slot]?.id === item.id;
-    return `<button class="loot-row treasure-row ${item.rarity}" data-item="${esc(item.id)}"><span class="item-square">${itemImage(item)}</span><span class="treasure-name"><b>${esc(item.name)}</b><small>${slots[item.slot]} · ${elements[item.element]}${worn ? ' · 已装备' : ''}${item.locked ? ' · 已锁定' : ''}</small></span><em>${rarity[item.rarity]}</em><span class="power">${fmt(item.power)}<small>威能</small></span><span class="treasure-arrow" aria-hidden="true">›</span></button>`;
+    return `<button class="loot-row treasure-row ${item.rarity}" data-item="${esc(item.id)}"><span class="item-square">${itemImage(item)}</span><span class="treasure-name"><b>${esc(item.name)}</b><small>${slots[item.slot]} · ${elements[item.element]}${worn ? ' · 已装备' : ''}${item.locked ? ' · 已锁定' : ''}${item.forgeRank ? ` · 精炼 ${item.forgeRank}` : ''}</small></span><em>${rarity[item.rarity]}</em><span class="power">${fmt(item.power)}<small>威能</small></span><span class="treasure-arrow" aria-hidden="true">›</span></button>`;
   }).join('') || '<div class="empty">这里暂时没有符合条件的装备。</div>';
 }
 
@@ -51,5 +52,5 @@ export function itemDetailMarkup(game, id) {
     const quality = unchanged ? 'same' : (inverse ? delta < 0 : delta > 0) ? 'better' : 'worse';
     const format = value => key === 'huntSeconds' ? value.toFixed(2) : fmt(value);
     return `<div class="comparison-row" data-compare="${key}"><span>${name}</span><span>${format(before[key])}${unit}</span><b>${format(after[key])}${unit}</b><em class="${quality}">${unchanged ? '—' : `${delta > 0 ? '+' : '−'}${format(Math.abs(delta))}${unit}`}</em></div>`;
-  }).join('')}<p>清剿用时越短越好；寻宝变化按百分点计。<br>${worn ? '此物品正在使用。' : currentItem ? `将替换：${esc(currentItem.name)}` : '当前槽位为空。'}${blockedEquip ? ' 此槽位为空，请先腾出一个行囊空位再装备。' : place !== '行囊' && s.inventory.length >= INVENTORY_CAPACITY ? ' 行囊已满时，原装备会交换回此位置；不会丢弃。' : ''}</p></section><div class="treasure-actions"><button class="primary" data-equip="${esc(id)}" ${worn || blockedEquip ? 'disabled' : ''}>${worn ? '正在装备' : blockedEquip ? '先整理一个空位' : '装备这件遗物'}</button><button class="outline" data-sell="${esc(id)}" ${worn || item.locked ? 'disabled' : ''}>出售 · ${fmt(item.value)} 金币</button><button class="outline" data-list="${esc(id)}" ${worn || item.locked ? 'disabled' : ''}>上架 · ${fmt(Math.round(item.value * 1.5))} 金币</button>${place !== '行囊' ? `<button class="outline" data-claim="${esc(id)}" ${canClaim ? '' : 'disabled'}>${place === '待处理' && s.inventory.length >= INVENTORY_CAPACITY ? '收入保管箱' : '领取到行囊'}</button>` : ''}</div><p class="note">${item.locked ? '已锁定：不会被出售、批量整理或上架。' : '珍惜的宝物可以锁定；已装备物品也不会被出售。'}${place !== '行囊' && !canClaim ? ' 领取前请先整理一个空位。' : ''}</p>`;
+  }).join('')}<p>清剿用时越短越好；寻宝变化按百分点计。<br>${worn ? '此物品正在使用。' : currentItem ? `将替换：${esc(currentItem.name)}` : '当前槽位为空。'}${blockedEquip ? ' 此槽位为空，请先腾出一个行囊空位再装备。' : place !== '行囊' && s.inventory.length >= INVENTORY_CAPACITY ? ' 行囊已满时，原装备会交换回此位置；不会丢弃。' : ''}</p></section>${forgeMarkup(game, id)}<div class="treasure-actions"><button class="primary" data-equip="${esc(id)}" ${worn || blockedEquip ? 'disabled' : ''}>${worn ? '正在装备' : blockedEquip ? '先整理一个空位' : '装备这件遗物'}</button><button class="outline" data-sell="${esc(id)}" ${worn || item.locked ? 'disabled' : ''}>出售 · ${fmt(item.value)} 金币</button><button class="outline" data-list="${esc(id)}" ${worn || item.locked ? 'disabled' : ''}>上架 · ${fmt(Math.round(item.value * 1.5))} 金币</button>${place !== '行囊' ? `<button class="outline" data-claim="${esc(id)}" ${canClaim ? '' : 'disabled'}>${place === '待处理' && s.inventory.length >= INVENTORY_CAPACITY ? '收入保管箱' : '领取到行囊'}</button>` : ''}</div><p class="note">${item.locked ? '已锁定：不会被出售、批量整理、上架或精炼。' : '珍惜的宝物可以锁定；已装备物品也不会被出售。'}${place !== '行囊' && !canClaim ? ' 领取前请先整理一个空位。' : ''}</p>`;
 }
